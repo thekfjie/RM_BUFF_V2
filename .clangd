@@ -1,0 +1,5 @@
+CompileFlags:
+  Add:
+    - -std=c++17
+    - -IE:/RM/rm_vision/RM_Buff_Tracker_GUT_cpp/src
+    - -ID:/develop/opencv_windows/opencv/build/include
