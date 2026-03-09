@@ -1,0 +1,141 @@
+先设 PATH
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH%
+可选：设一个 exe 变量
+set EXE=E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe
+---
+1) 最常用
+默认运行（= 8_dark_blue_small）
+%EXE%
+交互输入路径
+%EXE% --prompt-path
+直接传任意 parameter.yaml
+%EXE% "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\parameter.yaml"
+直接传视频（自动找同目录 parameter.yaml）
+%EXE% --video "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\dark_blue_small.MP4"
+---
+2) 预测 examples（推荐主用）
+6_dark_blue_big
+%EXE% ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\6_dark_blue_big\parameter.yaml" ^
+  --color blue ^
+  --mode big
+7_dark_red_big
+%EXE% ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\7_dark_red_big\parameter.yaml" ^
+  --color red ^
+  --mode big
+8_dark_blue_small
+%EXE% ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\parameter.yaml" ^
+  --color blue ^
+  --mode small
+9_dark_red_small
+%EXE% ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\9_dark_red_small\parameter.yaml" ^
+  --color red ^
+  --mode small
+10_dark_red_small_near
+%EXE% ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml" ^
+  --color red ^
+  --mode small
+---
+3) 调参模式（最实用）
+8_dark_blue_small 调参
+%EXE% ^
+  --tune ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\parameter.yaml"
+9_dark_red_small 调参
+%EXE% ^
+  --tune ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\9_dark_red_small\parameter.yaml"
+10_dark_red_small_near 调参
+%EXE% ^
+  --tune ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml"
+直接跳到指定帧调参
+%EXE% ^
+  --tune ^
+  --tune-frame 245 ^
+  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\parameter.yaml"
+---
+4) 老 examples（1~5）参数文件路径小抄
+这些也有 parameter.yaml，更偏早期识别/调参素材：
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\1_8mm_red_bright\parameter.yaml
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\2_12mm_red_bright\parameter.yaml
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\3_12mm_red_dark\parameter.yaml
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\4_12mm_blue_dark\parameter.yaml
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\5_old_buff_red_dark\parameter.yaml
+如果你想拿它们先调参看画面，推荐直接用 --tune：
+1_8mm_red_bright 调参
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\1_8mm_red_bright\parameter.yaml"
+2_12mm_red_bright 调参
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\2_12mm_red_bright\parameter.yaml"
+3_12mm_red_dark 调参
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\3_12mm_red_dark\parameter.yaml"
+4_12mm_blue_dark 调参
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\4_12mm_blue_dark\parameter.yaml"
+5_old_buff_red_dark 调参
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\5_old_buff_red_dark\parameter.yaml"
+---
+5) 通用模板
+普通运行模板
+%EXE% "某个parameter.yaml路径" --color red|blue --mode small|big
+调参模板
+%EXE% --tune "某个parameter.yaml路径"
+视频模板
+%EXE% --video "某个视频路径"
+---
+6) 目前建议你最常用的 3 条
+%EXE%
+%EXE% "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\9_dark_red_small\parameter.yaml" --color red --mode small
+%EXE% --tune "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml"
+
+---
+现在你可以直接这样开调参器
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --tune
+它现在会在 CMD 里提示你：
+Tuner video path (press ENTER to use default):
+  [默认视频路径]
+>
+Initial preview speed (0.25~8.0, default 1.0):
+>
+Tuner Preview: SPACE freeze current frame, q quit.
+---
+你问“那个其他的视频地址填入，可以吗？”
+可以，但有个前提：
+最好这个视频所在目录里有同目录的 parameter.yaml。
+比如这些都可以直接填：
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\10_dark_red_small_near\dark_red_small_near.MP4
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\9_dark_red_small\dark_red_small.mp4
+E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\5_old_buff_red_dark\old_buff_red_dark.avi
+程序会自动找同目录下的：
+- parameter.yaml
+- 或 parameter.yml
+如果那个视频目录里没有 yaml
+那就不建议只填视频路径。  
+这时更稳的是直接传 parameter.yaml。
+---
+现在调参流程是什么样
+1. 启动 --tune
+2. 在 CMD 里输入视频路径
+3. 输入预览速度
+4. 视频自动播放预览
+5. 按 SPACE
+   - 冻结当前帧
+   - 进入 ROI 选择
+6. 选：
+   - R
+   - 扇叶
+7. 进入滑条面板调：
+   - LH
+   - LS
+   - LV
+   - UH
+   - US
+   - UV
+   - kernel
+   - outside
+   - inside
+8. 按 q 保存回 parameter.yaml
+---
