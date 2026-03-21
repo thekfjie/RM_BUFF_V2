@@ -1,0 +1,40 @@
+build/
+
+# CMake / Visual Studio
+CMakeCache.txt
+CMakeFiles/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.obj
+*.pdb
+*.ipch
+*.tlog
+*.recipe
+*.ilk
+*.idb
+*.lastbuildstate
+*.opensdf
+*.sdf
+*.suo
+*.user
+
+# Binaries
+*.exe
+*.dll
+*.lib
+*.exp
+
+# Local run outputs
+run_*.log
+*_small.txt
+*_big.txt
+frame_*_start.png
+
+# IDE / OS
+.vs/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "vs2022-debug",
+      "displayName": "VS2022 x64 Debug",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022-debug",
+      "cacheVariables": {
+        "DEFAULT_OPENCV_DIR": "D:/develop/opencv_windows/opencv/build"
+      }
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "VS2022 x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022-release",
+      "cacheVariables": {
+        "DEFAULT_OPENCV_DIR": "D:/develop/opencv_windows/opencv/build"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-debug",
+      "displayName": "Build VS2022 x64 Debug",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vs2022-release",
+      "displayName": "Build VS2022 x64 Release",
+      "configurePreset": "vs2022-release",
+      "configuration": "Release"
+    }
+  ]
+}
