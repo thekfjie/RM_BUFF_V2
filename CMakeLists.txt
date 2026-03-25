@@ -117,6 +117,10 @@ if(ament_cmake_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND AND
             DESTINATION lib/${PROJECT_NAME})
     install(DIRECTORY config/
             DESTINATION share/${PROJECT_NAME}/config)
+    install(DIRECTORY launch/
+            DESTINATION share/${PROJECT_NAME}/launch)
+    install(DIRECTORY models/
+            DESTINATION share/${PROJECT_NAME}/models)
 
     ament_package()
 else()

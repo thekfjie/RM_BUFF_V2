@@ -8,7 +8,7 @@
 namespace gutcpp {
 
 struct Keypoints {
-    std::array<cv::Point2f, 5> points{};  // 0-3: armor corners, 4: R-mark center
+    std::array<cv::Point2f, 5> points{};  // Dataset order: 0,1,3,4 are blade points; 2 is center R
     bool valid = false;
 };
 

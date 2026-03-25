@@ -45,11 +45,6 @@ tests.txt
 tests/output/
 tests/temp_*.yaml
 
-# Local models
-models/*.onnx
-models/*.pt
-models/*.engine
-
 # IDE / OS
 .vs/
 .idea/

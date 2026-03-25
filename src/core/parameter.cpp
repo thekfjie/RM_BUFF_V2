@@ -162,7 +162,20 @@ void SaveParameter(const Parameter& parameter) {
     output << "    \"insideRate\": " << parameter.insideRate << ",\n";
     output << "    \"kernel\": " << parameter.kernel << ",\n";
     output << "    \"video relative path\": \"" << parameter.videoRelativePath << "\",\n";
-    output << "    \"start\": " << parameter.start << "\n";
+    output << "    \"start\": " << parameter.start << ",\n";
+    output << "    \"detectorType\": \"" << parameter.detectorType << "\",\n";
+    output << "    \"onnxModelPath\": \"" << parameter.onnxModelPath << "\",\n";
+    output << "    \"yoloConfidence\": " << parameter.yoloConfidence << ",\n";
+    output << "    \"yoloNmsThreshold\": " << parameter.yoloNmsThreshold << ",\n";
+    output << "    \"yoloInputWidth\": " << parameter.yoloInputWidth << ",\n";
+    output << "    \"yoloInputHeight\": " << parameter.yoloInputHeight << ",\n";
+    output << "    \"yoloRefreshInterval\": " << parameter.yoloRefreshInterval << ",\n";
+    output << "    \"enableCompensation\": " << (parameter.enableCompensation ? 1 : 0) << ",\n";
+    output << "    \"bulletSpeed\": " << parameter.bulletSpeed << ",\n";
+    output << "    \"targetDistance\": " << parameter.targetDistance << ",\n";
+    output << "    \"commLatencySec\": " << parameter.commLatencySec << ",\n";
+    output << "    \"gimbalDelaySec\": " << parameter.gimbalDelaySec << ",\n";
+    output << "    \"extraDelaySec\": " << parameter.extraDelaySec << "\n";
     output << "}\n";
 }
 
