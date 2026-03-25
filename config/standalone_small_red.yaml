@@ -1,0 +1,18 @@
+%YAML:1.0
+pythonRoot: "../.."
+parameterPath: "examples/example_for_prediction/9_dark_red_small/parameter.yaml"
+videoPath: ""
+color: "red"
+mode: "small"
+freq: 50
+deltaT: 0.2
+imshow: 1
+detector: "hsv"
+onnxModelPath: ""
+yoloRelockIntervalFrames: 3
+yoloRelockAfterMisses: 1
+tune: 0
+tuneFrame: -1
+tunePreviewSpeed: 1.0
+rBox: []
+fanBox: []

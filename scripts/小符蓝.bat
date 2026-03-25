@@ -2,16 +2,15 @@
 setlocal
 cd /d "%~dp0.."
 set "PATH=D:\develop\opencv\build\x64\vc16\bin;D:\develop\onnxruntime\lib;%PATH%"
-set "ROOT=E:\RM\rm_vision"
-set "PARAM=%ROOT%\examples\example_for_prediction\8_dark_blue_small\parameter.yaml"
 set "EXE=%~dp0..\build\vs2022-release\Release\predict_example_main.exe"
+set "CONFIG=%~dp0..\config\standalone_small_blue.yaml"
 
 if not exist "%EXE%" call "%~dp0build_release.bat"
 if errorlevel 1 goto :fail
 if not exist "%EXE%" goto :fail
-if not exist "%PARAM%" goto :missing_param
+if not exist "%CONFIG%" goto :missing_config
 
-"%EXE%" --python-root "%ROOT%" --parameter "%PARAM%" --mode small --color blue
+"%EXE%" --config "%CONFIG%"
 set "EXITCODE=%ERRORLEVEL%"
 if "%EXITCODE%"=="0" exit /b 0
 
@@ -20,10 +19,10 @@ echo Program exited with code %EXITCODE%.
 pause
 exit /b %EXITCODE%
 
-:missing_param
+:missing_config
 echo.
-echo Missing parameter file:
-echo %PARAM%
+echo Missing config file:
+echo %CONFIG%
 pause
 exit /b 1
 

@@ -14,6 +14,7 @@
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/core/persistence.hpp>
 #include <opencv2/videoio.hpp>
 
 #include "core/angle_processor.hpp"
@@ -38,11 +39,13 @@ using gutcpp::SaveParameter;
 BBox RoiToBBox(const cv::Rect& rect);
 cv::Rect BBoxToRect(const BBox& bbox);
 void EnsureResizableWindow(const std::string& windowName, const cv::Size& size);
+MoveMode ParseMoveMode(const std::string& value);
 
 struct Options {
     fs::path pythonRoot;
     fs::path parameterPath;
     bool parameterExplicit = false;
+    std::optional<fs::path> runConfigPath;
     std::optional<fs::path> sourcePath;
     std::optional<fs::path> videoPathOverride;
     std::string color = "blue";
@@ -58,6 +61,8 @@ struct Options {
     std::optional<cv::Rect> fanBoxOverride;
     std::string detectorOverride;  // "yolo" or "hsv", overrides parameter file
     std::string onnxPathOverride;  // override onnxModelPath from parameter file
+    int yoloRelockIntervalFrames = 3;
+    int yoloRelockAfterMisses = 1;
 };
 
 struct TuneControls {
@@ -88,6 +93,7 @@ std::vector<fs::path> DefaultParameterList() {
 
 void PrintUsage() {
     std::cout << "Usage: predict_example_main [options] [parameter.yaml|video]\n"
+              << "  --config <path>\n"
               << "  --python-root <path>\n"
               << "  --prompt-path\n"
               << "  --video <path>\n"
@@ -98,6 +104,8 @@ void PrintUsage() {
               << "  --mode <small|big>\n"
               << "  --freq <int>\n"
               << "  --deltaT <float>\n"
+              << "  --yolo-relock-interval <int>\n"
+              << "  --yolo-relock-after-misses <int>\n"
               << "  --r-box x,y,w,h\n"
               << "  --fan-box x,y,w,h\n"
               << "  --imshow <0|1>\n";
@@ -168,6 +176,38 @@ fs::path ResolveRawPath(const fs::path& pythonRoot, const fs::path& rawPath) {
         return currentPath.lexically_normal();
     }
     return (pythonRoot / rawPath).lexically_normal();
+}
+
+fs::path ResolveCliPath(const fs::path& rawPath) {
+    if (rawPath.is_absolute()) {
+        return rawPath.lexically_normal();
+    }
+    return (fs::current_path() / rawPath).lexically_normal();
+}
+
+fs::path ResolveConfigRelativePath(const fs::path& configPath, const fs::path& rawPath) {
+    if (rawPath.is_absolute()) {
+        return rawPath.lexically_normal();
+    }
+    return (configPath.parent_path() / rawPath).lexically_normal();
+}
+
+fs::path ResolveConfigSearchPath(const fs::path& configPath, const fs::path& pythonRoot, const fs::path& rawPath) {
+    if (rawPath.is_absolute()) {
+        return rawPath.lexically_normal();
+    }
+
+    const std::array<fs::path, 3> candidates = {
+        (configPath.parent_path() / rawPath).lexically_normal(),
+        (fs::current_path() / rawPath).lexically_normal(),
+        (pythonRoot / rawPath).lexically_normal()
+    };
+    for (const fs::path& candidate : candidates) {
+        if (fs::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return candidates.front();
 }
 
 std::optional<fs::path> InferParameterPathFromVideo(const fs::path& videoPath) {
@@ -275,6 +315,126 @@ cv::Rect ParseRect(const std::string& value) {
     return cv::Rect(values[0], values[1], values[2], values[3]);
 }
 
+std::optional<cv::Rect> ReadOptionalRectNode(const cv::FileNode& node) {
+    if (node.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<int> values;
+    node >> values;
+    if (values.empty()) {
+        return std::nullopt;
+    }
+    if (values.size() != 4) {
+        throw std::runtime_error("Rect node must contain 4 integers");
+    }
+    return cv::Rect(values[0], values[1], values[2], values[3]);
+}
+
+std::string ReadOptionalStringNode(const cv::FileNode& node) {
+    if (node.empty()) {
+        return "";
+    }
+    std::string value;
+    node >> value;
+    return Trim(std::move(value));
+}
+
+void ReadOptionalIntNode(const cv::FileNode& node, int& value) {
+    if (!node.empty()) {
+        node >> value;
+    }
+}
+
+void ReadOptionalDoubleNode(const cv::FileNode& node, double& value) {
+    if (!node.empty()) {
+        node >> value;
+    }
+}
+
+void ApplyRunConfig(const fs::path& configPath, Options& options) {
+    cv::FileStorage storage;
+    if (!storage.open(configPath.string(), cv::FileStorage::READ)) {
+        storage.release();
+        if (!storage.open(configPath.string(), cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON)) {
+            throw std::runtime_error("Failed to open run config: " + configPath.string());
+        }
+    }
+
+    const std::string pythonRootValue = ReadOptionalStringNode(storage["pythonRoot"]);
+    if (!pythonRootValue.empty()) {
+        options.pythonRoot = ResolveConfigRelativePath(configPath, fs::path(NormalizePathInput(pythonRootValue)));
+    }
+
+    const std::string parameterPathValue = ReadOptionalStringNode(storage["parameterPath"]);
+    if (!parameterPathValue.empty()) {
+        options.parameterPath = fs::path(NormalizePathInput(parameterPathValue));
+        options.parameterExplicit = true;
+    }
+
+    const std::string videoPathValue = ReadOptionalStringNode(storage["videoPath"]);
+    if (!videoPathValue.empty()) {
+        options.videoPathOverride = fs::path(NormalizePathInput(videoPathValue));
+    }
+
+    const std::string colorValue = ReadOptionalStringNode(storage["color"]);
+    if (!colorValue.empty()) {
+        options.color = colorValue;
+    }
+
+    const std::string modeValue = ReadOptionalStringNode(storage["mode"]);
+    if (!modeValue.empty()) {
+        options.moveMode = ParseMoveMode(modeValue);
+    }
+
+    ReadOptionalIntNode(storage["freq"], options.freq);
+    ReadOptionalDoubleNode(storage["deltaT"], options.deltaT);
+
+    int imshowValue = options.isImshow ? 1 : 0;
+    ReadOptionalIntNode(storage["imshow"], imshowValue);
+    options.isImshow = (imshowValue != 0);
+
+    const std::string detectorValue = ReadOptionalStringNode(storage["detector"]);
+    if (!detectorValue.empty()) {
+        options.detectorOverride = detectorValue;
+    }
+
+    const std::string onnxPathValue = ReadOptionalStringNode(storage["onnxModelPath"]);
+    if (!onnxPathValue.empty()) {
+        options.onnxPathOverride =
+            ResolveConfigSearchPath(configPath, options.pythonRoot, fs::path(NormalizePathInput(onnxPathValue))).string();
+    }
+
+    ReadOptionalIntNode(storage["yoloRelockIntervalFrames"], options.yoloRelockIntervalFrames);
+    ReadOptionalIntNode(storage["yoloRelockAfterMisses"], options.yoloRelockAfterMisses);
+
+    int tuneValue = options.tune ? 1 : 0;
+    ReadOptionalIntNode(storage["tune"], tuneValue);
+    options.tune = (tuneValue != 0);
+
+    int tuneFrameValue = options.tuneFrame.has_value() ? options.tuneFrame.value() : -1;
+    ReadOptionalIntNode(storage["tuneFrame"], tuneFrameValue);
+    options.tuneFrame = (tuneFrameValue >= 0) ? std::optional<int>(tuneFrameValue) : std::nullopt;
+
+    ReadOptionalDoubleNode(storage["tunePreviewSpeed"], options.tunePreviewSpeed);
+
+    options.rBoxOverride = ReadOptionalRectNode(storage["rBox"]);
+    options.fanBoxOverride = ReadOptionalRectNode(storage["fanBox"]);
+}
+
+std::optional<fs::path> FindRunConfigPath(int argc, char** argv) {
+    for (int index = 1; index < argc; ++index) {
+        const std::string arg = argv[index];
+        if (arg == "--config") {
+            if (index + 1 >= argc) {
+                throw std::runtime_error("Missing value for argument: --config");
+            }
+            return ResolveCliPath(fs::path(NormalizePathInput(argv[index + 1])));
+        }
+    }
+    return std::nullopt;
+}
+
 MoveMode ParseMoveMode(const std::string& value) {
     if (value == "small") {
         return MoveMode::Small;
@@ -300,6 +460,11 @@ Options ParseArgs(int argc, char** argv) {
     options.pythonRoot = DefaultPythonRoot();
     options.parameterPath = DefaultParameterList()[2];
 
+    if (const std::optional<fs::path> runConfigPath = FindRunConfigPath(argc, argv); runConfigPath.has_value()) {
+        options.runConfigPath = runConfigPath;
+        ApplyRunConfig(runConfigPath.value(), options);
+    }
+
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index];
         auto requireValue = [&](const std::string& name) -> std::string {
@@ -310,7 +475,9 @@ Options ParseArgs(int argc, char** argv) {
             return argv[index];
         };
 
-        if (arg == "--python-root") {
+        if (arg == "--config") {
+            requireValue(arg);
+        } else if (arg == "--python-root") {
             options.pythonRoot = requireValue(arg);
         } else if (arg == "--prompt-path") {
             options.promptPath = true;
@@ -331,6 +498,10 @@ Options ParseArgs(int argc, char** argv) {
             options.freq = std::stoi(requireValue(arg));
         } else if (arg == "--deltaT") {
             options.deltaT = std::stod(requireValue(arg));
+        } else if (arg == "--yolo-relock-interval") {
+            options.yoloRelockIntervalFrames = std::max(1, std::stoi(requireValue(arg)));
+        } else if (arg == "--yolo-relock-after-misses") {
+            options.yoloRelockAfterMisses = std::max(1, std::stoi(requireValue(arg)));
         } else if (arg == "--imshow") {
             options.isImshow = std::stoi(requireValue(arg)) != 0;
         } else if (arg == "--r-box") {
@@ -705,6 +876,9 @@ int main(int argc, char** argv) {
 
         std::cout << "Using parameter: " << resolvedParameterPath.string() << std::endl;
         std::cout << "Using video: " << videoPath.string() << std::endl;
+        if (options.runConfigPath.has_value()) {
+            std::cout << "Using run config: " << options.runConfigPath.value().string() << std::endl;
+        }
 
         if (options.tune) {
             RunTuneMode(options, parameter, resolvedParameterPath, videoPath);
@@ -723,8 +897,6 @@ int main(int argc, char** argv) {
         int interval = 0;
         int lostFrames = 0;
         int lastYoloAttemptFrame = -1000000;
-        constexpr int kYoloRelockIntervalFrames = 3;
-
         const fs::path logDir = fs::current_path() / "logs";
         fs::create_directories(logDir);
         const std::string modeStr = (options.moveMode == MoveMode::Small) ? "small" : "big";
@@ -855,7 +1027,8 @@ int main(int argc, char** argv) {
                         std::cout << "Frame " << frameCount << ": tracker lost target, missCount="
                                   << lostFrames << std::endl;
                         const bool shouldTryRelock =
-                            (frameCount - lastYoloAttemptFrame) >= kYoloRelockIntervalFrames;
+                            (lostFrames >= options.yoloRelockAfterMisses) &&
+                            ((frameCount - lastYoloAttemptFrame) >= options.yoloRelockIntervalFrames);
                         if (shouldTryRelock && tryYoloLock(frame, "relock")) {
                             continue;
                         }
