@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0.."
 set "PATH=D:\develop\opencv\build\x64\vc16\bin;D:\develop\onnxruntime\lib;%PATH%"
 set "EXE=%~dp0..\build\vs2022-release\Release\predict_example_main.exe"
-set "CONFIG=%~dp0..\config\standalone_yolo_small_blue.yaml"
+set "CONFIG=%~dp0..\config\lab\standalone_yolo_small_blue.yaml"
 
 if not exist "%EXE%" call "%~dp0build_release.bat"
 if errorlevel 1 goto :fail

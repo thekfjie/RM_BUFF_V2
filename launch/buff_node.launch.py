@@ -8,7 +8,7 @@ from launch.substitutions import PathJoinSubstitution
 
 def generate_launch_description():
     default_params_file = PathJoinSubstitution(
-        [FindPackageShare("rm_buff_tracker"), "config", "buff_node.yaml"]
+        [FindPackageShare("rm_buff_tracker"), "config", "lab", "buff_node_lab.yaml"]
     )
     params_file = LaunchConfiguration("params_file")
     image_topic = LaunchConfiguration("image_topic")

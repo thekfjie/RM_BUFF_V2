@@ -1,0 +1,65 @@
+buff_tracker_node:
+  ros__parameters:
+    # 目标颜色：red / blue
+    color: red
+    # 模式：small / big
+    mode: small
+    # 预测提前量，单位秒
+    delta_t: 0.2
+    # 算法运行频率，通常按相机实际频率填写
+    freq: 50
+
+    # 检测模式：yolo=模型初始化/重锁，hsv=纯传统固定 ROI
+    detector_type: yolo
+    # YOLO 模型路径，建议写相对路径
+    # 这里的 models/best.onnx 会优先按已安装包的 share 目录解析
+    onnx_model_path: "models/best.onnx"
+    # YOLO 置信度阈值
+    yolo_confidence: 0.25
+    # 预留字段，当前 end-to-end YOLO26 一般不会真正走外部 NMS
+    yolo_nms_threshold: 0.45
+    # YOLO 输入宽高
+    yolo_input_width: 640
+    yolo_input_height: 640
+    # YOLO 自身刷新间隔
+    yolo_refresh_interval: 30
+    # 丢失后，两次重锁之间至少间隔多少帧
+    yolo_relock_interval_frames: 3
+    # 连续丢多少帧后才开始重锁
+    yolo_relock_after_misses: 1
+
+    # 是否发布调试图像话题 ~/debug_image
+    publish_debug_image: true
+    # 是否在本机弹出 OpenCV 调试窗口
+    # 机器人无桌面环境时建议保持 false
+    show_debug_window: false
+
+    # 是否打开弹道补偿
+    enable_compensation: false
+    # 弹速，单位 m/s
+    bullet_speed: 15.0
+    # 目标距离，单位 m
+    target_distance: 7.0
+    # 通信延迟，单位秒
+    comm_latency_sec: 0.01
+    # 云台自身延迟，单位秒
+    gimbal_delay_sec: 0.05
+    # 额外补偿延迟，单位秒
+    extra_delay_sec: 0.0
+
+    # HSV 下限
+    hsv_lower: [0, 100, 100]
+    # HSV 上限
+    hsv_upper: [15, 255, 255]
+    # 形态学膨胀核大小
+    kernel: 3
+    # 内圈比例
+    inside_rate: 0.6
+    # 外圈比例
+    outside_rate: 1.5
+
+    # 仅在 detector_type == hsv 时使用
+    # 手动指定 R 的 ROI，格式 [x, y, w, h]
+    static_r_roi: []
+    # 手动指定扇叶 ROI，格式 [x, y, w, h]
+    static_fan_roi: []

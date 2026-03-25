@@ -96,12 +96,13 @@ target_link_libraries(yolo_image_test PRIVATE buff_core)
 
 # === Optional ROS 2 build ===
 find_package(ament_cmake QUIET)
+find_package(ament_index_cpp QUIET)
 find_package(rclcpp QUIET)
 find_package(sensor_msgs QUIET)
 find_package(std_msgs QUIET)
 find_package(geometry_msgs QUIET)
 
-if(ament_cmake_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND AND
+if(ament_cmake_FOUND AND ament_index_cpp_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND AND
    std_msgs_FOUND AND geometry_msgs_FOUND)
     message(STATUS "ROS 2 environment found, building buff_node")
 
@@ -111,7 +112,7 @@ if(ament_cmake_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND AND
     )
     target_link_libraries(buff_node PRIVATE buff_core)
     ament_target_dependencies(buff_node
-        rclcpp sensor_msgs std_msgs geometry_msgs)
+        ament_index_cpp rclcpp sensor_msgs std_msgs geometry_msgs)
 
     install(TARGETS buff_node predict_example_main
             DESTINATION lib/${PROJECT_NAME})

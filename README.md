@@ -17,6 +17,13 @@ RoboMaster 能量机关识别、跟踪、预测与调试仓库。
 - 新增单图和视频调试工具，能直接检查模型框、关键点和推导出的 `R box`
 - ROS 2 节点已对齐 2.2 主流程，支持上机接图、预测输出和调试图输出
 
+## 已知现象
+
+- `[YOLO]大符蓝` 在开头几秒里，`mask__` 黑白调试窗口可能会短暂出现重复候选框，主框也可能有轻微跳变。
+- 这段现象主要发生在 `YOLO 初始化 -> HSV/F_BuffTracker 接管` 的过渡期，来源是 HSV 二值图里的候选轮廓临时分裂/粘连，不是 YOLO 持续多目标检出。
+- 当前实测里，这个现象只出现在开头几秒，后续会自行稳定；如果没有触发持续丢失、频繁重锁或后段预测漂移，通常不需要专门修改。
+- 如果后续它开始影响主流程，再优先检查对应场景 `parameter.yaml` 里的 HSV 上下限、`kernel`、`insideRate`、`outsideRate`。
+
 ## 目录
 
 - `src/core/`
@@ -153,7 +160,7 @@ source install/setup.bash
 
 ```bash
 ros2 launch rm_buff_tracker buff_node.launch.py \
-  params_file:=/home/rm/rm_ws/src/rm_buff_tracker/config/buff_node.yaml \
+  params_file:=/home/rm/rm_ws/src/rm_buff_tracker/config/lab/buff_node_lab.yaml \
   image_topic:=/camera/image_raw
 ```
 
@@ -176,7 +183,7 @@ ros2 launch rm_buff_tracker buff_node.launch.py image_topic:=/camera/image_raw
 - `detector_type`
   上机建议用 `yolo`
 - `onnx_model_path`
-  机器人上模型的真实绝对路径
+  模型路径，支持相对路径或绝对路径；推荐优先写 `models/best.onnx`
 - `freq`
   相机和算法实际运行频率
 - `delta_t`
@@ -186,7 +193,7 @@ ros2 launch rm_buff_tracker buff_node.launch.py image_topic:=/camera/image_raw
 
 ROS 2 参数样例已经给在：
 
-- `config/buff_node.yaml`
+- `config/lab/buff_node_lab.yaml`
 
 ## 机器人上怎么调试
 

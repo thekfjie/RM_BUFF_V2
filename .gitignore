@@ -30,6 +30,7 @@ CMakeFiles/
 run_*.log
 frame_*_start.png
 logs/*.csv
+logs/*.log
 logs/*.txt
 logs/*.jpg
 logs/*.png

@@ -3,14 +3,18 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <string>
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace gutcpp {
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -40,6 +44,37 @@ std::optional<cv::Rect> ParseRoiParameter(const std::vector<int64_t>& values) {
 
 int PreferredYoloSeedClassId(const std::string& color) {
     return (color == "red") ? 1 : 2;
+}
+
+std::string ResolveRosPath(const std::string& rawPath) {
+    if (rawPath.empty()) {
+        return rawPath;
+    }
+
+    const fs::path inputPath(rawPath);
+    if (inputPath.is_absolute()) {
+        return inputPath.lexically_normal().string();
+    }
+
+    std::vector<fs::path> candidates;
+    candidates.emplace_back((fs::current_path() / inputPath).lexically_normal());
+
+    try {
+        const fs::path packageShare(ament_index_cpp::get_package_share_directory("rm_buff_tracker"));
+        candidates.emplace_back((packageShare / inputPath).lexically_normal());
+    } catch (...) {
+    }
+
+    for (const fs::path& candidate : candidates) {
+        if (fs::exists(candidate)) {
+            return candidate.string();
+        }
+    }
+
+    if (!candidates.empty()) {
+        return candidates.back().string();
+    }
+    return inputPath.lexically_normal().string();
 }
 
 sensor_msgs::msg::Image MakeBgrImageMessage(const std_msgs::msg::Header& header, const cv::Mat& image) {
@@ -195,7 +230,7 @@ bool BuffNode::ensureYoloAssistLoaded() {
     }
 
     YoloDetectorConfig yoloConfig;
-    yoloConfig.modelPath = parameter_.onnxModelPath;
+    yoloConfig.modelPath = ResolveRosPath(parameter_.onnxModelPath);
     yoloConfig.confidence = parameter_.yoloConfidence;
     yoloConfig.nmsThreshold = parameter_.yoloNmsThreshold;
     yoloConfig.inputWidth = parameter_.yoloInputWidth;
