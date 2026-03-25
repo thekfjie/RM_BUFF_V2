@@ -16,7 +16,7 @@
 - E:/RM/rm_vision/rm_rune_offline_test
 
 ### 新交接目录
-- E:/RM/rm_vision/RM_Buff_Tracker_GUT_cpp
+- E:/RM/rm_vision/RM_BUFF_V2.1
 
 ## 3. 原版 Python 以什么为准
 必须以这个入口为准，不要以 main.py 为准：
@@ -222,4 +222,3 @@ E:/RM/rm_vision/rm_rune_offline_test/build/vs2022-release/Release/rune_detector_
 - 已确认：那个目录下绝大多数是系统目录、系统链接或软件配置，不是“乱文件”。
 - 真正误落的只有我们自己的参数文件。
 - 结论：遇到用户目录顶层“看起来很乱”，只能精确清理已知误文件，不能泛删。
-

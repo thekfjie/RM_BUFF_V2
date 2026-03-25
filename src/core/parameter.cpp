@@ -69,6 +69,22 @@ std::string ReadString(const cv::FileNode& node, const std::string& fieldName) {
     return value;
 }
 
+void ReadOptional(const cv::FileNode& node, std::string& out) {
+    if (!node.empty()) node >> out;
+}
+void ReadOptional(const cv::FileNode& node, float& out) {
+    if (!node.empty()) node >> out;
+}
+void ReadOptional(const cv::FileNode& node, double& out) {
+    if (!node.empty()) node >> out;
+}
+void ReadOptional(const cv::FileNode& node, int& out) {
+    if (!node.empty()) node >> out;
+}
+void ReadOptional(const cv::FileNode& node, bool& out) {
+    if (!node.empty()) { int tmp = 0; node >> tmp; out = (tmp != 0); }
+}
+
 }
 
 fs::path ResolveParameterPath(const fs::path& pythonRoot, const fs::path& parameterPath) {
@@ -95,6 +111,22 @@ Parameter LoadParameter(const fs::path& parameterPath) {
     parameter.kernel = ReadInt(storage["kernel"], "kernel");
     parameter.videoRelativePath = ReadString(storage["video relative path"], "video relative path");
     parameter.start = ReadInt(storage["start"], "start");
+
+    // Optional fields -- old files that lack these keys keep defaults
+    ReadOptional(storage["detectorType"], parameter.detectorType);
+    ReadOptional(storage["onnxModelPath"], parameter.onnxModelPath);
+    ReadOptional(storage["yoloConfidence"], parameter.yoloConfidence);
+    ReadOptional(storage["yoloNmsThreshold"], parameter.yoloNmsThreshold);
+    ReadOptional(storage["yoloInputWidth"], parameter.yoloInputWidth);
+    ReadOptional(storage["yoloInputHeight"], parameter.yoloInputHeight);
+    ReadOptional(storage["yoloRefreshInterval"], parameter.yoloRefreshInterval);
+    ReadOptional(storage["enableCompensation"], parameter.enableCompensation);
+    ReadOptional(storage["bulletSpeed"], parameter.bulletSpeed);
+    ReadOptional(storage["targetDistance"], parameter.targetDistance);
+    ReadOptional(storage["commLatencySec"], parameter.commLatencySec);
+    ReadOptional(storage["gimbalDelaySec"], parameter.gimbalDelaySec);
+    ReadOptional(storage["extraDelaySec"], parameter.extraDelaySec);
+
     return parameter;
 }
 

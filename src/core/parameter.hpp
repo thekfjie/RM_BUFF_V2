@@ -27,6 +27,21 @@ struct Parameter {
     std::string videoRelativePath;
     int start = 0;
     std::filesystem::path parameterPath;
+
+    // --- Optional fields (backward-compatible with older YAML/JSON files) ---
+    std::string detectorType = "hsv";
+    std::string onnxModelPath;
+    float yoloConfidence = 0.25f;
+    float yoloNmsThreshold = 0.45f;
+    int yoloInputWidth = 640;
+    int yoloInputHeight = 640;
+    int yoloRefreshInterval = 30;
+    bool enableCompensation = false;
+    double bulletSpeed = 15.0;
+    double targetDistance = 7.0;
+    double commLatencySec = 0.01;
+    double gimbalDelaySec = 0.05;
+    double extraDelaySec = 0.0;
 };
 
 Parameter LoadParameter(const std::filesystem::path& parameterPath);

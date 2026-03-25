@@ -1,7 +1,7 @@
 #include "angle_processor.hpp"
 
 #include <algorithm>
-#include <numeric>
+#include <sstream>
 
 #include <opencv2/core/optim.hpp>
 
@@ -9,23 +9,35 @@ namespace gutcpp {
 
 namespace {
 
+struct FitBounds {
+    double aMin = 0.0, aMax = 1.0;
+    double wMin = 0.0, wMax = 10.0;
+    double offsetBase = 0.0;  // offset = offsetBase - amplitude
+};
+
 class SinFitObjective final : public cv::DownhillSolver::Function {
 public:
-    explicit SinFitObjective(std::vector<double> y) : y_(std::move(y)) {}
+    SinFitObjective(std::vector<double> y, FitBounds bounds)
+        : y_(std::move(y)), bounds_(bounds) {}
 
     int getDims() const override {
-        return 4;
+        return 3;
     }
 
     double calc(const double* parameters) const override {
         const double amplitude = parameters[0];
         const double omega = parameters[1];
         const double phase = parameters[2];
-        const double offset = parameters[3];
-        if (!std::isfinite(amplitude) || !std::isfinite(omega) || !std::isfinite(phase) || !std::isfinite(offset) ||
-            omega <= 0.0) {
+        const double offset = bounds_.offsetBase - amplitude;
+        if (!std::isfinite(amplitude) || !std::isfinite(omega) || !std::isfinite(phase)) {
             return 1e18;
         }
+
+        double penalty = 0.0;
+        if (amplitude < bounds_.aMin) penalty += (bounds_.aMin - amplitude) * (bounds_.aMin - amplitude) * 1e6;
+        if (amplitude > bounds_.aMax) penalty += (amplitude - bounds_.aMax) * (amplitude - bounds_.aMax) * 1e6;
+        if (omega < bounds_.wMin) penalty += (bounds_.wMin - omega) * (bounds_.wMin - omega) * 1e6;
+        if (omega > bounds_.wMax) penalty += (omega - bounds_.wMax) * (omega - bounds_.wMax) * 1e6;
 
         double error = 0.0;
         for (std::size_t index = 0; index < y_.size(); ++index) {
@@ -33,11 +45,12 @@ public:
             const double diff = predicted - y_[index];
             error += diff * diff;
         }
-        return error;
+        return error + penalty;
     }
 
 private:
     std::vector<double> y_;
+    FitBounds bounds_;
 };
 
 double EstimateDominantFrequency(const std::vector<double>& y) {
@@ -190,27 +203,26 @@ std::pair<bool, int> FitStartDetect::update(double data) {
 }
 
 SmallPredictor::SmallPredictor(double deltaT, int freq)
-    : winSize_(static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT))) {}
+    : deltaAngle_(kSmallRuneSpeed * deltaT),
+      warmupFrames_(std::max(1, static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT)))) {}
 
 PredictionResult SmallPredictor::update(double data) {
-    y_.push_back(data);
-    if (static_cast<int>(y_.size()) == winSize_) {
-        std::vector<double> diff;
-        diff.reserve(static_cast<std::size_t>(std::max(0, winSize_ - 1)));
-        for (int index = 1; index < winSize_; ++index) {
-            diff.push_back(y_[static_cast<std::size_t>(index)] - y_[static_cast<std::size_t>(index - 1)]);
-        }
-        pred_ = std::accumulate(diff.begin(), diff.end(), 0.0) / static_cast<double>(diff.size());
-        return {true, pred_ * static_cast<double>(winSize_)};
+    ++frameCount_;
+    if (frameCount_ == 1) {
+        firstAngle_ = data;
     }
-    if (static_cast<int>(y_.size()) > winSize_) {
-        return {true, pred_ * static_cast<double>(winSize_)};
+    if (frameCount_ >= warmupFrames_) {
+        if (direction_ == 0.0) {
+            direction_ = (data - firstAngle_ >= 0.0) ? 1.0 : -1.0;
+        }
+        return {true, direction_ * deltaAngle_};
     }
     return {false, 0.0};
 }
 
 BigPredictor::BigPredictor(double deltaT, int freq)
     : frameInterval_(static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT))),
+      freq_(freq),
       startFit_(),
       smooth_(20),
       slidWindow_(static_cast<std::size_t>(frameInterval_)) {}
@@ -219,10 +231,24 @@ double BigPredictor::targetValue(double x, const FitState& fitState) {
     return fitState.amplitude * std::sin(fitState.omega * x + fitState.phase) + fitState.offset;
 }
 
-BigPredictor::FitState BigPredictor::fitSinusoid(const std::vector<double>& y) {
+BigPredictor::FitState BigPredictor::fitSinusoid(const std::vector<double>& y) const {
     if (y.size() < 4) {
         throw std::runtime_error("Not enough samples to fit big predictor");
     }
+
+    // Physical rule: spd = a*sin(w*t) + b, a∈[0.780,1.045], w∈[1.884,2.000], b=2.090-a
+    // Fitting data diffY[i] ≈ speed * (frameInterval/freq), index i is per-frame
+    // So: a_fit = a_phys * timeScale, w_fit = w_phys / freq, offset_fit = b_phys * timeScale
+    const double timeScale = static_cast<double>(frameInterval_) / static_cast<double>(freq_);
+    const double freqScale = 1.0 / static_cast<double>(freq_);
+
+    const FitBounds bounds{
+        0.780 * timeScale,   // aMin
+        1.045 * timeScale,   // aMax
+        1.884 * freqScale,   // wMin
+        2.000 * freqScale,   // wMax
+        2.090 * timeScale    // offsetBase: offset = offsetBase - amplitude
+    };
 
     auto evaluateError = [&](const FitState& state) {
         double error = 0.0;
@@ -237,34 +263,32 @@ BigPredictor::FitState BigPredictor::fitSinusoid(const std::vector<double>& y) {
 
     FitState fitState;
     const auto [minIt, maxIt] = std::minmax_element(y.begin(), y.end());
-    fitState.amplitude = *maxIt - *minIt;
-    fitState.omega = 2.0 * CV_PI * EstimateDominantFrequency(y);
+    fitState.amplitude = std::clamp(*maxIt - *minIt, bounds.aMin, bounds.aMax);
+    fitState.omega = std::clamp(2.0 * CV_PI * EstimateDominantFrequency(y), bounds.wMin, bounds.wMax);
     fitState.phase = 0.0;
-    fitState.offset = std::accumulate(y.begin(), y.end(), 0.0) / static_cast<double>(y.size());
+    fitState.offset = bounds.offsetBase - fitState.amplitude;
 
-    cv::Mat params = (cv::Mat_<double>(4, 1) << fitState.amplitude, std::max(1e-6, fitState.omega), fitState.phase,
-                     fitState.offset);
-    cv::Mat step = (cv::Mat_<double>(4, 1) << std::max(0.1, std::abs(fitState.amplitude) * 0.1),
-                   std::max(1e-4, std::abs(fitState.omega) * 0.1), 0.5,
-                   std::max(0.1, std::abs(fitState.offset) * 0.1 + 0.1));
+    cv::Mat params = (cv::Mat_<double>(3, 1) << fitState.amplitude, fitState.omega, fitState.phase);
+    cv::Mat step = (cv::Mat_<double>(3, 1) << (bounds.aMax - bounds.aMin) * 0.3,
+                   (bounds.wMax - bounds.wMin) * 0.5, 0.5);
 
     const FitState initialState = fitState;
     const double initialError = evaluateError(initialState);
 
     cv::Ptr<cv::DownhillSolver> solver = cv::DownhillSolver::create();
-    solver->setFunction(cv::makePtr<SinFitObjective>(y));
+    solver->setFunction(cv::makePtr<SinFitObjective>(y, bounds));
     solver->setInitStep(step);
     solver->setTermCriteria(cv::TermCriteria(cv::TermCriteria::MAX_ITER + cv::TermCriteria::EPS, 5000, 1e-9));
     solver->minimize(params);
 
     FitState optimizedState;
-    optimizedState.amplitude = params.at<double>(0, 0);
-    optimizedState.omega = params.at<double>(1, 0);
+    optimizedState.amplitude = std::clamp(params.at<double>(0, 0), bounds.aMin, bounds.aMax);
+    optimizedState.omega = std::clamp(params.at<double>(1, 0), bounds.wMin, bounds.wMax);
     optimizedState.phase = params.at<double>(2, 0);
-    optimizedState.offset = params.at<double>(3, 0);
+    optimizedState.offset = bounds.offsetBase - optimizedState.amplitude;
 
     const double optimizedError = evaluateError(optimizedState);
-    if (std::isfinite(optimizedError) && optimizedState.omega > 0.0 && optimizedError <= initialError) {
+    if (std::isfinite(optimizedError) && optimizedError <= initialError) {
         fitState = optimizedState;
     }
     return fitState;
@@ -352,6 +376,30 @@ double AngleObserver::update(double x, double y, double radius) {
     lastX_ = x;
     lastY_ = y;
     return angle;
+}
+
+std::string SmallPredictor::debugState() const {
+    std::ostringstream oss;
+    oss << "Small,deltaAngle=" << direction_ * deltaAngle_ << ",dir=" << direction_
+        << ",frame=" << frameCount_ << ",warmup=" << warmupFrames_;
+    return oss.str();
+}
+
+std::string BigPredictor::debugState() const {
+    std::ostringstream oss;
+    oss << "Big,isStart=" << isStart_ << ",refitCount=" << fitUpdateCounter_;
+    if (fitState_.has_value()) {
+        const auto& fs = fitState_.value();
+        const double timeScale = static_cast<double>(frameInterval_) / static_cast<double>(freq_);
+        const double freqScale = 1.0 / static_cast<double>(freq_);
+        oss << ",a_fit=" << fs.amplitude << ",w_fit=" << fs.omega
+            << ",phase=" << fs.phase << ",offset=" << fs.offset
+            << ",a_phys=" << fs.amplitude / timeScale
+            << ",w_phys=" << fs.omega / freqScale;
+    } else {
+        oss << ",fit=none";
+    }
+    return oss.str();
 }
 
 std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode, double deltaT, int freq) {

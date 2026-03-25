@@ -1,7 +1,37 @@
 先设 PATH
 set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH%
+最省事：直接双击同目录下这些 bat
+- 构建Release.bat
+- 小符蓝.bat
+- 小符红.bat
+- 大符蓝.bat
+- 大符红.bat
+- 调参模式.bat
+其中运行类 bat 会自动设 PATH；如果 exe 不存在，会先自动构建；并直接连接到 E:\RM\rm_vision\examples 里的对应 parameter.yaml。
+对应关系：
+- 小符蓝 -> E:\RM\rm_vision\examples\example_for_prediction\8_dark_blue_small\parameter.yaml
+- 小符红 -> E:\RM\rm_vision\examples\example_for_prediction\9_dark_red_small\parameter.yaml
+- 大符蓝 -> E:\RM\rm_vision\examples\example_for_prediction\6_dark_blue_big\parameter.yaml
+- 大符红 -> E:\RM\rm_vision\examples\example_for_prediction\7_dark_red_big\parameter.yaml
+- 调参模式 -> E:\RM\rm_vision\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml
 可选：设一个 exe 变量
-set EXE=E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe
+set EXE=E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe
+---
+0) RM_BUFF_V2.1 直接命令
+构建
+cd /d E:\RM\rm_vision\RM_BUFF_V2.1
+cmake --preset vs2022-release
+cmake --build build/vs2022-release --config Release
+小符蓝
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --python-root "E:\RM\rm_vision" --parameter "E:\RM\rm_vision\examples\example_for_prediction\8_dark_blue_small\parameter.yaml" --mode small --color blue
+小符红
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --python-root "E:\RM\rm_vision" --parameter "E:\RM\rm_vision\examples\example_for_prediction\9_dark_red_small\parameter.yaml" --mode small --color red
+大符蓝
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --python-root "E:\RM\rm_vision" --parameter "E:\RM\rm_vision\examples\example_for_prediction\6_dark_blue_big\parameter.yaml" --mode big --color blue
+大符红
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --python-root "E:\RM\rm_vision" --parameter "E:\RM\rm_vision\examples\example_for_prediction\7_dark_red_big\parameter.yaml" --mode big --color red
+调参模式
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --python-root "E:\RM\rm_vision" --tune --parameter "E:\RM\rm_vision\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml"
 ---
 1) 最常用
 默认运行（= 8_dark_blue_small）
@@ -93,7 +123,7 @@ E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\5_old_buff_red_dark\parameter.
 
 ---
 现在你可以直接这样开调参器
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --tune
+set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_BUFF_V2.1\build\vs2022-release\Release\predict_example_main.exe" --tune
 它现在会在 CMD 里提示你：
 Tuner video path (press ENTER to use default):
   [默认视频路径]

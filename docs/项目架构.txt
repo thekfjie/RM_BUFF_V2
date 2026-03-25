@@ -1,0 +1,20 @@
+  RM_BUFF_V2.1/
+    CMakeLists.txt           ← buff_core 库 + standalone exe + 条件 ROS 2
+    package.xml              ← colcon build 用
+    config/default_params.yaml ← 完整配置示例
+    src/
+      core/                  ← 核心库 (无 GUI/ROS 依赖)
+        types.hpp            ← DetectionResult, PipelineOutput
+        detector_interface.hpp ← 检测器抽象接口
+        hsv_detector.hpp/cpp ← 包装 F_BuffTracker
+        yolo_detector.hpp/cpp ← OpenCV DNN + ONNX (无模型时自动 fallback)
+        compensation.hpp/cpp ← 弹丸飞行补偿
+        buff_pipeline.hpp/cpp ← 统一编排: 检测→跟踪→预测→补偿
+        buff_tracker.hpp/cpp ← 核心跟踪 (不变)
+        angle_processor.hpp/cpp ← 角度预测 (不变)
+        parameter.hpp/cpp    ← 扩展了 13 个可选字段, 旧 YAML 兼容
+      standalone/
+        standalone_main.cpp  ← 用 BuffPipeline, 保留全部 UI/日志
+      ros2/
+        buff_node.hpp/cpp    ← ROS 2 节点 (订阅 image, 发布 prediction)
+        ros2_main.cpp        ← ROS 2 入口

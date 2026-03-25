@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -80,25 +81,30 @@ class PredictorInterface {
 public:
     virtual ~PredictorInterface() = default;
     virtual PredictionResult update(double data) = 0;
+    virtual std::string debugState() const { return ""; }
 };
 
 class SmallPredictor final : public PredictorInterface {
 public:
     SmallPredictor(double deltaT, int freq);
     PredictionResult update(double data) override;
+    std::string debugState() const override;
 
 private:
-    int winSize_ = 0;
-    double pred_ = 0.0;
-    std::vector<double> y_;
+    static constexpr double kSmallRuneSpeed = CV_PI / 3.0;  // 1/3π rad/s per rules
+    double deltaAngle_ = 0.0;
+    int warmupFrames_ = 0;
+    int frameCount_ = 0;
+    double firstAngle_ = 0.0;
+    double direction_ = 0.0;
 };
 
 class BigPredictor final : public PredictorInterface {
 public:
     BigPredictor(double deltaT, int freq);
     PredictionResult update(double data) override;
+    std::string debugState() const override;
 
-private:
     struct FitState {
         double amplitude = 0.0;
         double omega = 0.0;
@@ -106,10 +112,12 @@ private:
         double offset = 0.0;
     };
 
+private:
     static double targetValue(double x, const FitState& fitState);
-    static FitState fitSinusoid(const std::vector<double>& y);
+    FitState fitSinusoid(const std::vector<double>& y) const;
 
     int frameInterval_ = 0;
+    int freq_ = 50;
     FitStartDetect startFit_;
     MovAvg smooth_;
     CircularQueue slidWindow_;

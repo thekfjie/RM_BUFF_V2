@@ -28,9 +28,27 @@ CMakeFiles/
 
 # Local run outputs
 run_*.log
-*_small.txt
-*_big.txt
 frame_*_start.png
+logs/*.csv
+logs/*.txt
+logs/*.jpg
+logs/*.png
+temp_yolo_hybrid.log
+temp_yolo_hybrid_short.log
+6_dark_blue_big.txt
+7_dark_red_big.txt
+8_dark_blue_small.txt
+9_dark_red_small.txt
+tests.txt
+
+# Test artifacts
+tests/output/
+tests/temp_*.yaml
+
+# Local models
+models/*.onnx
+models/*.pt
+models/*.engine
 
 # IDE / OS
 .vs/

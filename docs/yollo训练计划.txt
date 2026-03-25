@@ -1,0 +1,150 @@
+分析清楚了。这个项目可以用但需要适配。
+
+  评估
+                                                                                                                          优点：
+  - 5 关键点模型非常适合能量机关：4 个装甲板角点 + R 标中心点                                                             - 4 类标注（RR/RW/BR/BW）直接区分待打击 vs 已打击、红 vs 蓝
+  - 有公开数据集（百度网盘）
+  - 关键点比 bbox 精度高得多——直接拿到装甲板角点可以做 PnP 解算
+
+  问题：
+  - 基于 YOLOv7（已过时），建议迁移到 YOLOv8-pose
+  - 没有公开预训练权重，需要自己训练
+  - 推理部署用的是 OpenVINO，你的项目用的是 OpenCV DNN
+  - 输出格式需要适配（bbox + 5 个关键点，而非纯 bbox）
+
+  建议路线
+
+  ┌──────┬───────────────────────────────────────────────────────────────────┐
+  │ 步骤 │                               内容                                │
+  ├──────┼───────────────────────────────────────────────────────────────────┤
+  │ 1    │ 下载它的数据集（百度网盘 pwd=XPGM）                               │
+  ├──────┼───────────────────────────────────────────────────────────────────┤
+  │ 2    │ 用 YOLOv8n-pose 重新训练（ultralytics 框架，比 v7 更快更好部署）  │
+  ├──────┼───────────────────────────────────────────────────────────────────┤
+  │ 3    │ 标注格式转换：它的 13 值格式 → YOLOv8-pose 格式（兼容，稍调顺序） │
+  ├──────┼───────────────────────────────────────────────────────────────────┤
+  │ 4    │ 导出 ONNX，用你现有的 OpenCV DNN 推理                             │
+  ├──────┼───────────────────────────────────────────────────────────────────┤
+  │ 5    │ 改 YoloDetector 解析关键点输出（当前只解析 bbox）                 │
+  └──────┴───────────────────────────────────────────────────────────────────┘
+
+  关键改动：你的 yolo_detector.cpp 需要从输出中额外提取 5 个关键点坐标，而不只是 bbox。这样可以：
+  - 直接用第 5 点（R 标）替代 HSV 找 R 标
+  - 用前 4 点（装甲板角点）做 PnP 3D 解算
+  - 用 class ID 直接判断待打击/已打击
+
+  要我先帮你改 YoloDetector 适配关键点输出格式吗？还是你先去下数据集训练？
+
+
+
+
+
+  第一阶段：PC 上准备数据（你来做）
+
+  Step 1：下载数据集
+
+  去百度网盘下载那个项目的能量机关 5 点数据集：
+  ▎ 链接: https://pan.baidu.com/s/1ayRI1MMw40ae4kuFZCXK_Q?pwd=XPGM
+
+  下载后你会得到一堆图片和对应的 .txt 标注文件。
+
+  Step 2：整理成这个文件夹结构
+
+  buff_dataset/
+    images/
+      train/    ← 80% 的图片放这
+      val/      ← 20% 的图片放这
+    labels/
+      train/    ← 对应的 .txt 放这（文件名要和图片一一对应）
+      val/      ← 对应的 .txt 放这
+
+  图片和标注文件名要一样，比如 0001.jpg 对应 0001.txt。随机拆 80/20 就行。
+
+  Step 3：打包上传到 Google Drive
+
+  把整个 buff_dataset/ 文件夹压缩成 buff_dataset.zip，上传到你的 Google Drive 根目录。
+
+  ---
+  第二阶段：Colab 上训练（跟着 notebook 跑）
+
+  打开 https://colab.research.google.com ，新建一个 notebook，运行时类型选 GPU（菜单 → 代修改 → 笔记本设置 → T4 GPU）。
+
+  然后按顺序跑这些 cell：
+
+  Cell 1：安装 ultralytics
+  !pip install ultralytics -q
+
+  Cell 2：挂载 Google Drive
+  from google.colab import drive
+  drive.mount('/content/drive')
+  会弹出授权，点允许。
+
+  Cell 3：解压数据集
+  !unzip -q /content/drive/MyDrive/buff_dataset.zip -d /content/
+
+  Cell 4：创建配置文件
+  config = """
+  path: /content/buff_dataset
+  train: images/train
+  val: images/val
+
+  nc: 4
+  names: ['RR', 'RW', 'BR', 'BW']
+
+  kpt_shape: [5, 2]
+  """
+
+  with open('/content/buff_pose.yaml', 'w') as f:
+      f.write(config)
+
+  print("Config saved!")
+
+  Cell 5：开始训练
+  from ultralytics import YOLO
+
+  model = YOLO('yolo11n-pose.pt')  # nano 模型，小而快
+  results = model.train(
+      data='/content/buff_pose.yaml',
+      epochs=100,        # 100 轮，通常够了
+      imgsz=640,
+      batch=16,
+      device=0,          # 用 GPU
+      project='/content/drive/MyDrive/buff_train',  # 结果保存到 Drive，防 Colab 断连丢失
+      name='yolo11n_buff_pose',
+  )
+
+  训练过程中会打印每轮的 loss 和 mAP。Colab 免费版 T4 GPU 训练几百张图大概 30-60 分钟。
+
+  Cell 6：导出 ONNX
+  best = YOLO('/content/drive/MyDrive/buff_train/yolo11n_buff_pose/weights/best.pt')
+  best.export(format='onnx', imgsz=640)
+  print("Done! ONNX saved next to best.pt")
+
+  Cell 7：看一下效果（可选）
+  results = best.predict(
+      source='/content/buff_dataset/images/val',
+      save=True,
+      conf=0.5,
+      max_det=10,
+  )
+
+  ---
+  第三阶段：拿回模型用
+
+  1. 去 Google Drive 里 buff_train/yolo11n_buff_pose/weights/ 下载 best.onnx
+  2. 放到你项目里任意位置
+  3. 在 parameter.yaml 里填：
+  detectorType: "yolo"
+  onnxModelPath: "E:/RM/rm_vision/models/best.onnx"
+
+  然后我帮你改 YoloDetector 解析关键点输出（当前只解析 bbox，还没解析 5 个关键点坐标）。
+
+  ---
+  如果训得不好怎么办？
+
+  - 数据太少：自己录视频截帧，用 https://github.com/HumanSignal/labelImg 或 https://roboflow.com 标注补充
+  - loss 不下降：试试 epochs=200，或换 yolo11s-pose.pt（small，比 nano 大一点）
+  - 想试 YOLO26：把 Cell 5 的 yolo11n-pose.pt 改成 yolo26n-pose.pt，其他全部不变
+
+  先去下数据集吧，下好了告诉我数据的格式长什么样，我帮你确认能不能直接用。
+

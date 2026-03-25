@@ -10,24 +10,25 @@
 #include <vector>
 
 #include <algorithm>
+#include <cmath>
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
-#include "angle_processor.hpp"
-#include "buff_tracker.hpp"
-#include "parameter.hpp"
+#include "core/angle_processor.hpp"
+#include "core/buff_tracker.hpp"
+#include "core/parameter.hpp"
+#include "core/buff_pipeline.hpp"
+#include "core/hsv_detector.hpp"
+#include "core/yolo_detector.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-using gutcpp::AngleObserver;
 using gutcpp::BBox;
 using gutcpp::ClockMode;
-using gutcpp::CreatePredictor;
-using gutcpp::F_BuffTracker;
 using gutcpp::MoveMode;
 using gutcpp::Parameter;
 using gutcpp::ResolveParameterPath;
@@ -35,6 +36,7 @@ using gutcpp::ResolveVideoPath;
 using gutcpp::SaveParameter;
 
 BBox RoiToBBox(const cv::Rect& rect);
+cv::Rect BBoxToRect(const BBox& bbox);
 void EnsureResizableWindow(const std::string& windowName, const cv::Size& size);
 
 struct Options {
@@ -54,6 +56,8 @@ struct Options {
     double tunePreviewSpeed = 1.0;
     std::optional<cv::Rect> rBoxOverride;
     std::optional<cv::Rect> fanBoxOverride;
+    std::string detectorOverride;  // "yolo" or "hsv", overrides parameter file
+    std::string onnxPathOverride;  // override onnxModelPath from parameter file
 };
 
 struct TuneControls {
@@ -333,6 +337,10 @@ Options ParseArgs(int argc, char** argv) {
             options.rBoxOverride = ParseRect(requireValue(arg));
         } else if (arg == "--fan-box") {
             options.fanBoxOverride = ParseRect(requireValue(arg));
+        } else if (arg == "--detector") {
+            options.detectorOverride = requireValue(arg);
+        } else if (arg == "--onnx") {
+            options.onnxPathOverride = requireValue(arg);
         } else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             std::exit(0);
@@ -661,6 +669,19 @@ BBox RoiToBBox(const cv::Rect& rect) {
     return BBox(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height);
 }
 
+cv::Rect BBoxToRect(const BBox& bbox) {
+    const int width = std::max(1, static_cast<int>(std::lround(bbox.width())));
+    const int height = std::max(1, static_cast<int>(std::lround(bbox.height())));
+    return cv::Rect(static_cast<int>(std::lround(bbox.xmin)),
+                    static_cast<int>(std::lround(bbox.ymin)),
+                    width,
+                    height);
+}
+
+int PreferredYoloSeedClassId(const std::string& color) {
+    return (color == "red") ? 1 : 2;
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -700,51 +721,170 @@ int main(int argc, char** argv) {
         std::vector<cv::Point2d> predictedPoints;
         int frameCount = 0;
         int interval = 0;
+        int lostFrames = 0;
+        int lastYoloAttemptFrame = -1000000;
+        constexpr int kYoloRelockIntervalFrames = 3;
 
-        std::unique_ptr<F_BuffTracker> tracker;
-        std::unique_ptr<AngleObserver> observer;
-        std::unique_ptr<gutcpp::PredictorInterface> predictor;
+        const fs::path logDir = fs::current_path() / "logs";
+        fs::create_directories(logDir);
+        const std::string modeStr = (options.moveMode == MoveMode::Small) ? "small" : "big";
+        const fs::path logPath = logDir / (modeStr + "_" + options.color + "_predict.csv");
+        std::ofstream logFile(logPath);
+        logFile << "frame,observed_angle,raw_angle,delta_angle,pred_x,pred_y,debug_state\n";
+
+        gutcpp::PipelineConfig pipeConfig;
+        pipeConfig.moveMode = options.moveMode;
+        pipeConfig.clockMode = ParseClockMode(options.color);
+        pipeConfig.deltaT = options.deltaT;
+        pipeConfig.freq = options.freq;
+        pipeConfig.enableCompensation = parameter.enableCompensation;
+        pipeConfig.compensationConfig.bulletSpeed = parameter.bulletSpeed;
+        pipeConfig.compensationConfig.targetDistance = parameter.targetDistance;
+        pipeConfig.compensationConfig.commLatencySec = parameter.commLatencySec;
+        pipeConfig.compensationConfig.gimbalDelaySec = parameter.gimbalDelaySec;
+        pipeConfig.compensationConfig.extraDelaySec = parameter.extraDelaySec;
+        interval = static_cast<int>(static_cast<double>(options.freq) * options.deltaT);
+
+        const std::string detType = !options.detectorOverride.empty()
+            ? options.detectorOverride : parameter.detectorType;
+        const std::string onnxPath = !options.onnxPathOverride.empty()
+            ? options.onnxPathOverride : parameter.onnxModelPath;
+        bool useYoloAssist = (detType == "yolo");
+        const int preferredYoloClassId = PreferredYoloSeedClassId(options.color);
+
+        std::unique_ptr<gutcpp::BuffPipeline> pipeline;
+        std::unique_ptr<gutcpp::YoloDetector> yoloAssist;
+
+        auto buildManualPipeline = [&](const cv::Mat& currentFrame) {
+            const cv::Rect rRect = options.rBoxOverride.has_value() ? options.rBoxOverride.value()
+                                                                    : SelectRoiFitted("roi", currentFrame);
+            const cv::Rect fanRect = options.fanBoxOverride.has_value() ? options.fanBoxOverride.value()
+                                                                        : SelectRoiFitted("roi2", currentFrame);
+            auto hsvDet = std::make_unique<gutcpp::HsvDetector>(options.isImshow);
+            auto newPipeline = std::make_unique<gutcpp::BuffPipeline>(std::move(hsvDet), pipeConfig);
+            if (!newPipeline->initialize(currentFrame, parameter, rRect, fanRect)) {
+                return false;
+            }
+            pipeline = std::move(newPipeline);
+            lostFrames = 0;
+            return true;
+        };
+
+        auto buildPipelineFromSeed = [&](const cv::Mat& currentFrame,
+                                         const gutcpp::DetectionResult& seed,
+                                         const std::string& reason) {
+            auto hsvDet = std::make_unique<gutcpp::HsvDetector>(options.isImshow);
+            auto newPipeline = std::make_unique<gutcpp::BuffPipeline>(std::move(hsvDet), pipeConfig);
+            if (!newPipeline->initialize(currentFrame, parameter, BBoxToRect(seed.rBox), BBoxToRect(seed.fanBladeBox))) {
+                std::cout << "Frame " << frameCount << ": YOLO " << reason
+                          << " succeeded but HSV tracker init failed" << std::endl;
+                return false;
+            }
+            pipeline = std::move(newPipeline);
+            lostFrames = 0;
+            std::cout << "Frame " << frameCount << ": YOLO " << reason
+                      << " locked target, conf=" << seed.confidence
+                      << " r=(" << seed.rBox.center2i().x << "," << seed.rBox.center2i().y << ")"
+                      << " fan=(" << seed.fanBladeBox.center2i().x << "," << seed.fanBladeBox.center2i().y << ")"
+                      << std::endl;
+            return true;
+        };
+
+        auto tryYoloLock = [&](const cv::Mat& currentFrame, const std::string& reason) {
+            if (!yoloAssist) {
+                return false;
+            }
+            lastYoloAttemptFrame = frameCount;
+            const std::optional<gutcpp::DetectionResult> seed =
+                yoloAssist->detectTarget(currentFrame, preferredYoloClassId);
+            if (!seed.has_value()) {
+                std::cout << "Frame " << frameCount << ": YOLO " << reason << " miss" << std::endl;
+                return false;
+            }
+            return buildPipelineFromSeed(currentFrame, seed.value(), reason);
+        };
+
+        if (useYoloAssist) {
+            gutcpp::YoloDetectorConfig yoloCfg;
+            yoloCfg.modelPath = onnxPath;
+            yoloCfg.confidence = parameter.yoloConfidence;
+            yoloCfg.nmsThreshold = parameter.yoloNmsThreshold;
+            yoloCfg.inputWidth = parameter.yoloInputWidth;
+            yoloCfg.inputHeight = parameter.yoloInputHeight;
+            yoloCfg.refreshInterval = parameter.yoloRefreshInterval;
+
+            yoloAssist = std::make_unique<gutcpp::YoloDetector>(yoloCfg, false);
+            if (!yoloAssist->loadModel()) {
+                std::cout << "YOLO model load failed, falling back to HSV manual mode" << std::endl;
+                yoloAssist.reset();
+                useYoloAssist = false;
+            } else {
+                std::cout << "YOLO assist active: model only initializes/relocks tracker" << std::endl;
+            }
+        }
 
         while (capture.read(frame)) {
             ++frameCount;
             std::cout << frameCount << std::endl;
 
             if (frameCount >= parameter.start) {
-                if (frameCount == parameter.start) {
-                    const cv::Rect rRect = options.rBoxOverride.has_value() ? options.rBoxOverride.value()
-                                                                            : SelectRoiFitted("roi", frame);
-                    const cv::Rect fanRect = options.fanBoxOverride.has_value() ? options.fanBoxOverride.value()
-                                                                                : SelectRoiFitted("roi2", frame);
-                    BBox rBox = RoiToBBox(rRect);
-                    BBox fanBladeBox = RoiToBBox(fanRect);
+                if (!pipeline) {
+                    if (useYoloAssist) {
+                        if (tryYoloLock(frame, "init")) {
+                            continue;
+                        }
+                        if (options.isImshow) {
+                            SafeImshow("frame", frame);
+                        }
+                        const int key = cv::waitKey(1);
+                        if (key == 'q' || key == 'Q') {
+                            break;
+                        }
+                        continue;
+                    }
 
-                    tracker = std::make_unique<F_BuffTracker>(fanBladeBox, rBox, parameter, options.isImshow);
-                    observer = std::make_unique<AngleObserver>(ParseClockMode(options.color));
-                    predictor = CreatePredictor(options.moveMode, options.deltaT, options.freq);
-                    interval = static_cast<int>(static_cast<double>(options.freq) * options.deltaT);
+                    if (!buildManualPipeline(frame)) {
+                        throw std::runtime_error("Pipeline initialization failed");
+                    }
                 }
 
-                const bool ok = tracker->update(frame, true);
-                if (!ok) {
-                    std::cout << std::boolalpha << false << std::endl;
-                    const std::string reason = tracker->lastFailureReason().empty()
-                                                   ? std::string("Tracker update failed")
-                                                   : tracker->lastFailureReason();
-                    throw std::runtime_error(reason);
+                gutcpp::PipelineOutput output = pipeline->processFrame(frame);
+                if (output.rBox.area() == 0.0) {
+                    if (useYoloAssist) {
+                        ++lostFrames;
+                        std::cout << "Frame " << frameCount << ": tracker lost target, missCount="
+                                  << lostFrames << std::endl;
+                        const bool shouldTryRelock =
+                            (frameCount - lastYoloAttemptFrame) >= kYoloRelockIntervalFrames;
+                        if (shouldTryRelock && tryYoloLock(frame, "relock")) {
+                            continue;
+                        }
+                        if (options.isImshow) {
+                            SafeImshow("frame", frame);
+                        }
+                        const int key = cv::waitKey(1);
+                        if (key == 'q' || key == 'Q') {
+                            break;
+                        }
+                        continue;
+                    }
+                    throw std::runtime_error("Tracker update failed");
                 }
+                lostFrames = 0;
 
-                const cv::Point2f relative = tracker->fanBladeBox().center2f() - tracker->rBox().center2f();
-                double angle = observer->update(relative.x, relative.y, tracker->radius());
-                angles.push_back(angle);
+                angles.push_back(output.observedAngle);
 
-                const gutcpp::PredictionResult prediction = predictor->update(angle);
-                if (prediction.ready) {
-                    angle = gutcpp::trans(relative.x, relative.y) + prediction.deltaAngle;
-                    double x = std::cos(angle) * tracker->radius();
-                    double y = std::sin(angle) * tracker->radius();
-                    x += tracker->rBox().center2f().x;
-                    y += tracker->rBox().center2f().y;
+                if (output.predictionReady) {
+                    const double x = output.predictedPoint.x;
+                    const double y = output.predictedPoint.y;
                     predictedPoints.emplace_back(x, y);
+
+                    logFile << frameCount << ","
+                            << output.observedAngle << ","
+                            << output.rawAngle << ","
+                            << output.deltaAngle << ","
+                            << x << "," << y << ","
+                            << output.debugState << "\n";
 
                     cv::circle(frame, cv::Point(static_cast<int>(x), static_cast<int>(y)), 10, cv::Scalar(0, 255, 0), -1);
                     cv::putText(frame, "now predict", cv::Point(static_cast<int>(x), static_cast<int>(y)),
@@ -761,7 +901,7 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                cv::rectangle(frame, tracker->fanBladeBox().p1i(), tracker->fanBladeBox().p2i(), cv::Scalar(0, 255, 0), 3);
+                cv::rectangle(frame, output.fanBladeBox.p1i(), output.fanBladeBox.p2i(), cv::Scalar(0, 255, 0), 3);
 
                 if (options.isImshow) {
                     SafeImshow("frame", frame);
@@ -774,6 +914,8 @@ int main(int argc, char** argv) {
         }
 
         WriteAnglesFile(angles, parameter);
+        logFile.flush();
+        std::cout << "Prediction log: " << logPath.string() << std::endl;
         if (options.isImshow) {
             ShowAnglesPlot(angles);
         }
