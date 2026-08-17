@@ -1,0 +1,49 @@
+buff_detector_node:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    camera_info_topic: /camera_info
+    observation_topic: /buff/detector/observation
+    debug_image_topic: /buff/detector/debug_image
+
+    color: blue
+    mode: small
+    delta_t: 0.2
+    freq: 50
+
+    detector_type: yolo
+    onnx_model_path: models/best.onnx
+    yolo_confidence: 0.25
+    yolo_nms_threshold: 0.45
+    yolo_input_width: 640
+    yolo_input_height: 640
+    yolo_refresh_interval: 30
+    yolo_show_debug: false
+
+    publish_debug_image: true
+    show_debug_window: false
+
+    enable_compensation: false
+    bullet_speed: 15.0
+    target_distance: 7.0
+    comm_latency_sec: 0.01
+    gimbal_delay_sec: 0.05
+    extra_delay_sec: 0.0
+
+    # PnP stays disabled until the real BUFF blade object points are measured.
+    enable_pnp: false
+
+    hsv_lower: [0, 100, 100]
+    hsv_upper: [15, 255, 255]
+    kernel: 3
+    inside_rate: 0.6
+    outside_rate: 1.5
+
+buff_spatial_tracker_node:
+  ros__parameters:
+    observation_topic: /buff/detector/observation
+    target_topic: /buff/tracker/target
+    target_frame: odom
+    enable_tf: true
+    lost_time_thres: 0.3
+    prediction_lead_time: 0.0
+    velocity_smoothing_alpha: 0.45

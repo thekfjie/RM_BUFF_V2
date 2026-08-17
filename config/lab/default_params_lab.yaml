@@ -1,0 +1,57 @@
+%YAML:1.0
+
+# HSV 颜色阈值
+HSV:
+    # HSV 下限
+    lowerLimit: [0, 100, 100]
+    # HSV 上限
+    upperLimit: [15, 255, 255]
+
+# 传统方法里“可能是目标”的尺寸筛选阈值
+MayBeTarget:
+    # 候选最小宽度
+    width: 25.0
+    # 候选最小高度
+    height: 45.0
+    # 候选最小面积
+    area: 800.0
+
+# 外圈比例
+outsideRate: 1.5
+# 内圈比例
+insideRate: 0.6
+# 形态学核大小
+kernel: 3
+# 相对 pythonRoot 的视频路径
+"video relative path": "video/buff.avi"
+# 从第几帧开始跑
+start: 0
+
+# --- 可选：检测器配置 ---
+# 检测器类型：hsv / yolo
+detectorType: "hsv"
+# YOLO 模型路径
+onnxModelPath: ""
+# YOLO 置信度阈值
+yoloConfidence: 0.5
+# 预留字段，当前 end-to-end YOLO26 一般不会真正走外部 NMS
+yoloNmsThreshold: 0.45
+# YOLO 输入宽高
+yoloInputWidth: 640
+yoloInputHeight: 640
+# YOLO 自身刷新间隔
+yoloRefreshInterval: 30
+
+# --- 可选：弹道补偿 ---
+# 0=关闭，1=开启
+enableCompensation: 0
+# 弹速，单位 m/s
+bulletSpeed: 15.0
+# 目标距离，单位 m
+targetDistance: 7.0
+# 通信延迟，单位秒
+commLatencySec: 0.01
+# 云台延迟，单位秒
+gimbalDelaySec: 0.05
+# 额外补偿延迟，单位秒
+extraDelaySec: 0.0

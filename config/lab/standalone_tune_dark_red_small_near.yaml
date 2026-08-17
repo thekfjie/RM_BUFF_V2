@@ -1,0 +1,37 @@
+%YAML:1.0
+# 调参模式示例：近距离小符红
+
+# rm_vision 根目录
+pythonRoot: "../../.."
+# 场景参数文件
+parameterPath: "examples/example_for_prediction/10_dark_red_small_near/parameter.yaml"
+# 为空时使用 parameter.yaml 里的视频
+videoPath: ""
+# 目标颜色：red / blue
+color: "red"
+# 模式：small / big
+mode: "small"
+# 算法频率
+freq: 50
+# 预测提前量（秒）
+deltaT: 0.2
+# 1=显示画面，0=不显示
+imshow: 1
+# 调参一般用 hsv；yolo 也可以，但此文件默认是 hsv
+detector: "hsv"
+# YOLO 模型路径；传统模式可留空
+onnxModelPath: ""
+# 两次 YOLO 重锁之间至少间隔多少帧
+yoloRelockIntervalFrames: 3
+# 连续丢多少帧后才开始 YOLO 重锁
+yoloRelockAfterMisses: 1
+# 1=调参模式，0=正常运行
+tune: 1
+# 调参时固定到第几帧；-1 表示手动停帧
+tuneFrame: -1
+# 调参预览速度
+tunePreviewSpeed: 1.0
+# 手动指定 R ROI，[x, y, w, h]
+rBox: []
+# 手动指定扇叶 ROI，[x, y, w, h]
+fanBox: []

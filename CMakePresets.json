@@ -8,7 +8,8 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/vs2022-debug",
       "cacheVariables": {
-        "DEFAULT_OPENCV_DIR": "D:/develop/opencv_windows/opencv/build"
+        "DEFAULT_OPENCV_DIR": "D:/develop/opencv/build",
+        "DEFAULT_ONNXRUNTIME_DIR": "D:/develop/onnxruntime"
       }
     },
     {
@@ -18,7 +19,8 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/vs2022-release",
       "cacheVariables": {
-        "DEFAULT_OPENCV_DIR": "D:/develop/opencv_windows/opencv/build"
+        "DEFAULT_OPENCV_DIR": "D:/develop/opencv/build",
+        "DEFAULT_ONNXRUNTIME_DIR": "D:/develop/onnxruntime"
       }
     }
   ],

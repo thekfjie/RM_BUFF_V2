@@ -1,8 +1,18 @@
 build/
+install/
+log/
+output/
+tmp/
+temp/
+temp_ros2_probe/
 
 # CMake / Visual Studio
 CMakeCache.txt
 CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+CTestTestfile.cmake
+Testing/
 *.sln
 *.vcxproj
 *.vcxproj.filters
@@ -28,9 +38,49 @@ CMakeFiles/
 
 # Local run outputs
 run_*.log
-*_small.txt
-*_big.txt
 frame_*_start.png
+logs/*.csv
+logs/*.log
+logs/*.txt
+logs/*.jpg
+logs/*.png
+temp_yolo_hybrid.log
+temp_yolo_hybrid_short.log
+6_dark_blue_big.txt
+7_dark_red_big.txt
+8_dark_blue_small.txt
+9_dark_red_small.txt
+tests.txt
+
+# Test artifacts
+tests/output/
+tests/temp_*.yaml
+
+# Local match-day configuration
+config/match/*.yaml
+!config/match/*.example.yaml
+
+# Local datasets and media
+data/
+datasets/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Python helpers / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Local learning notes (kept on the author's machine)
+docs/能量机关学习日志_*
 
 # IDE / OS
 .vs/
@@ -38,3 +88,4 @@ frame_*_start.png
 .vscode/
 Thumbs.db
 Desktop.ini
+.DS_Store

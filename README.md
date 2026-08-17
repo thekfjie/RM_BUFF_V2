@@ -1,286 +1,300 @@
-# RM_BUFF_V2
+# RM_BUFF_V2.2
 
-一个基于 C++/OpenCV 的 **RoboMaster 能量机关（大符 / 小符）离线复刻与调参仓库**。
+RoboMaster 能量机关识别、跟踪、预测与调试仓库。
 
-这个项目的目标不是延续旧的失败 C++ 语义，而是尽量贴近原版 Python 项目
-`RM_Buff_Tracker_GUT-main` 中 `predict_example_main.py` / `set_parameter.py` 的行为，先把**离线复刻、调参、追踪、预测**这条链跑通。
+当前 2.2 主线的定位是：
 
----
+- 保留传统方法作为主跟踪链路
+- 引入 YOLO26 ONNX 做初始化和重锁
+- 同时支持 Windows 离线视频调试和 ROS 2 上机接图
 
-## 当前状态
+## 2.2 的核心变化
 
-### 已完成
+- YOLO26 模型接入完成，支持 ONNX Runtime / OpenCV DNN
+- 主流程修正为“YOLO 初始化/重锁 + HSV/F_BuffTracker 持续跟踪”
+- 修正关键点顺序，当前数据集按 `kp3 = R`、`kp1/kp2/kp4/kp5 = 扇叶`
+- 推理前处理改成更贴近 Ultralytics 的 `letterbox`，解决关键点和 `R` 偏移
+- 新增单图和视频调试工具，能直接检查模型框、关键点和推导出的 `R box`
+- ROS 2 节点已对齐 2.2 主流程，支持上机接图、预测输出、`BuffTarget` 目标状态和调试图输出
+- 新增实验性空间通道：Detector 与 Tracker 解耦，支持 CameraInfo、yaw/pitch、TF 和短时丢失外推
 
-- 以 `predict_example_main.py` 为基线的 C++ 入口
-- 每个 example 使用自己的 `parameter.yaml`
-- `start` 帧后手动选择 `R` 与扇叶 ROI
-- `tracker.update -> angleObserver -> predictor -> draw -> imshow`
-- 保留原版 **fail-fast** 语义
-- 小符路径已验证：
-  - `8_dark_blue_small`
-  - `9_dark_red_small`
-- 大符路径已补齐主流程对齐（含 `bigPredictor`）
-- C++ 版调参面板（`--tune`）
-- 结束后角度文本输出 + 角度曲线窗口
+## 已知现象
 
-### 还没做成“比赛可直接上场版”
+- `[YOLO]大符蓝` 在开头几秒里，`mask__` 黑白调试窗口可能会短暂出现重复候选框，主框也可能有轻微跳变。
+- 这段现象主要发生在 `YOLO 初始化 -> HSV/F_BuffTracker 接管` 的过渡期，来源是 HSV 二值图里的候选轮廓临时分裂/粘连，不是 YOLO 持续多目标检出。
+- 当前实测里，这个现象只出现在开头几秒，后续会自行稳定；如果没有触发持续丢失、频繁重锁或后段预测漂移，通常不需要专门修改。
+- 如果后续它开始影响主流程，再优先检查对应场景 `parameter.yaml` 里的 HSV 上下限、`kernel`、`insideRate`、`outsideRate`。
 
-目前这套更像：
+## 目录
 
-- 离线复刻工具
-- 调参工具
-- 算法验证工具
+- `src/core/`
+  算法核心，包括传统跟踪、YOLO 检测、预测和补偿
+- `src/standalone/`
+  离线视频、图片序列和调参入口
+- `src/ros2/`
+  ROS 2 节点入口
+- `config/`
+  默认参数和 ROS 2 参数样例
+- `launch/`
+  ROS 2 启动文件
+- `scripts/`
+  Windows 下常用构建与运行脚本
+- `tests/`
+  YOLO 单图 / 视频检查工具
+- `models/`
+  模型文件
+- `docs/`
+  更细的设计和开发文档
 
-还**不是**完整比赛上场版本，因为还缺：
+## 本地离线构建
 
-- 自动初始化（不再手圈 `R` / 扇叶）
-- 丢失后的自动恢复 / 重锁
-- 实时相机接入与工程化状态机
-- 与云台 / 发射控制链路联动
-
----
-
-## 目录说明
-
-```text
-RM_Buff_Tracker_GUT_cpp/
-├─ src/                  # 核心 C++ 代码
-├─ CMakeLists.txt        # CMake 构建入口
-├─ CMakePresets.json     # VS2022 预设
-├─ .clangd               # 本地 LSP / compile flags
-├─ README.md             # 本说明
-├─ 指令说明.txt           # 常用命令小抄
-└─ AI_HANDOFF_RESEARCH.md
-```
-
----
-
-## 依赖与前提
-
-### 1. OpenCV
-
-当前默认构建环境是 Windows + VS2022 + OpenCV。
-
-运行前请先把 OpenCV DLL 放进 PATH：
+Windows + VS2022 + OpenCV。ONNX Runtime 可选；未找到时使用 OpenCV DNN：
 
 ```bat
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH%
-```
-
-### 2. Python 原版项目 / 示例数据
-
-默认情况下，这个仓库会去读取原版 Python 项目的 example 配置和视频。
-
-默认假设原版项目位于：
-
-```text
-../RM_Buff_Tracker_GUT-main
-```
-
-也就是例如：
-
-```text
-E:/RM/rm_vision/RM_Buff_Tracker_GUT_cpp
-E:/RM/rm_vision/RM_Buff_Tracker_GUT-main
-```
-
-如果你的 Python 原版项目不在这个位置，可以用：
-
-```bat
---python-root <path>
-```
-
----
-
-## 构建
-
-```bat
-cd /d E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp
+cd /d <repo>
 cmake --preset vs2022-release
-cmake --build --preset vs2022-release
+cmake --build build/vs2022-release --config Release
+ctest --test-dir build/vs2022-release -C Release --output-on-failure
 ```
 
-可执行文件路径：
+预设中的依赖路径是本机默认值，也可以通过 `OpenCV_DIR`、`ONNXRUNTIME_DIR` 环境变量或 `CMakeUserPresets.json` 覆盖。
+
+常用可执行文件：
+
+- `build/vs2022-release/Release/predict_example_main.exe`
+- `build/vs2022-release/Release/yolo_video_test.exe`
+- `build/vs2022-release/Release/yolo_image_test.exe`
+- `build/vs2022-release/Release/camera_geometry_test.exe`
+
+## 常用离线调试
+
+纯模型视频调试：
+
+```bat
+tests\run_yolo_video_test.bat ^
+  --video "<dataset>\dark_red_small_near.MP4" ^
+  --output "tests\output\dark_red_small_near.avi" ^
+  --show
+```
+
+纯模型单图对比：
+
+```bat
+tests\run_yolo_image_test.bat ^
+  --image "<dataset>\sample.jpg" ^
+  --show
+```
+
+## ROS 2 上机形态
+
+项目保留两种 ROS 2 形态：单节点兼容链路适合先验证原有算法；独立空间通道用于继续接相机标定、TF 和上层控制。
+
+### 单节点兼容链路
+
+#### 输入
+
+- 订阅：`~/image_raw`
+  相机图像，推荐 `bgr8` / `rgb8`
+
+#### 输出
+
+- 发布：`~/prediction`
+  类型：`geometry_msgs/msg/PointStamped`
+  含义：当前补偿后的图像坐标点，`x/y` 为像素坐标
+- 发布：`~/target`
+  类型：`rm_buff_tracker/msg/BuffTarget`
+  含义：能量机关专用目标状态，包含跟踪状态、预测状态、R 中心、扇叶中心、预测点、半径、角度和角速度；当前仍为图像平面状态，不直接驱动串口
+- 发布：`~/debug_state`
+  类型：`std_msgs/msg/Float64MultiArray`
+  当前字段顺序：
+  `found, prediction_ready, lost_frames, observed_angle, raw_angle, delta_angle, compensated_delta, angular_velocity, pred_x, pred_y, comp_x, comp_y, r_cx, r_cy, fan_cx, fan_cy, radius`
+- 发布：`~/debug_image`
+  类型：`sensor_msgs/msg/Image`
+  含义：带 `R` 框、扇叶框、预测点和状态文本的调试图
+
+#### 当前 ROS 2 策略
+
+- `detector_type=yolo`
+  使用 YOLO 做初始化和重锁，正常帧由传统跟踪器接管
+- `detector_type=hsv`
+  仅用于你已经知道固定 ROI 的情况，需要在参数里填写 `static_r_roi` 和 `static_fan_roi`
+
+### 独立空间通道（实验性）
 
 ```text
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe
+/camera/image_raw + /camera_info
+  -> buff_detector_node
+  -> /buff/detector/observation (BuffObservation)
+  -> buff_tracker_node + TF
+  -> /buff/tracker/target (BuffTargetState)
 ```
 
----
+Detector 的图像回调只覆盖保存最新帧，后台工作线程负责检测和预测，从而避免旧帧排队。Tracker 负责坐标变换、速度平滑和短时丢失外推。
 
-## 最常用运行方式
-
-### 1) 默认运行（= `8_dark_blue_small`）
-
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe
+```bash
+ros2 launch rm_buff_tracker buff_spatial_channel.launch.py \
+  params_file:=/home/rm/rm_ws/src/rm_buff_tracker/config/lab/buff_spatial_channel.yaml \
+  image_topic:=/camera/image_raw \
+  camera_info_topic:=/camera/camera_info \
+  target_frame:=odom
 ```
 
-默认等价于：
+注意：示例配置默认关闭 PnP。此时空间位置是把像素射线延伸到配置的 `target_distance`，属于固定距离近似，不是真实深度；实车使用前必须补齐真实相机标定、目标物理点和外参验证。
 
-- parameter: `examples/example_for_prediction/8_dark_blue_small/parameter.yaml`
-- color: `blue`
-- mode: `small`
-- freq: `50`
-- deltaT: `0.2`
+## 机器人上怎么接
 
-### 2) 交互输入路径
+### 1. 放进 ROS 2 工作空间
 
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe --prompt-path
+建议目录：
+
+```text
+~/rm_ws/src/rm_buff_tracker
 ```
 
-会提示输入：
+也就是把当前仓库整个放进去，包括：
 
-- `parameter.yaml` 路径，或
-- 视频路径（若同目录有 `parameter.yaml` 会自动识别）
+- `src/`
+- `config/`
+- `launch/`
+- `models/best.onnx`
 
-### 3) 直接传 `parameter.yaml`
+### 2. 准备依赖
 
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe ^
-  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\9_dark_red_small\parameter.yaml" ^
-  --color red ^
-  --mode small
+单节点链路至少需要：
+
+- ROS 2
+- OpenCV
+- ONNX Runtime（可选；缺失时回退 OpenCV DNN）
+
+空间通道还需要 `tf2`、`tf2_ros`、`tf2_geometry_msgs`。
+
+如果机器人上使用 ONNX Runtime，确保构建时能找到：
+
+- `ONNXRUNTIME_DIR`
+
+### 3. 编译
+
+在 ROS 2 工作空间下：
+
+```bash
+cd ~/rm_ws
+colcon build --packages-select rm_buff_tracker --cmake-args -DONNXRUNTIME_DIR=/path/to/onnxruntime
+source install/setup.bash
 ```
 
-### 4) 直接传视频路径
+### 4. 启动相机
 
-如果视频同目录下存在 `parameter.yaml` / `parameter.yml`，程序会自动推断并使用：
+确保相机节点已经在发布图像，比如：
 
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe ^
-  --video "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\dark_blue_small.MP4"
+- `/camera/image_raw`
+- `/hik/image_raw`
+- `/mv/image_raw`
+
+### 5. 启动 buff 节点
+
+推荐用参数文件 + remap：
+
+```bash
+ros2 launch rm_buff_tracker buff_node.launch.py \
+  params_file:=/home/rm/rm_ws/src/rm_buff_tracker/config/lab/buff_node_lab.yaml \
+  image_topic:=/camera/image_raw
 ```
 
----
+如果你的图像话题不是 `/camera/image_raw`，只改 `image_topic` 即可。
 
-## 调参模式（C++ 版 `set_parameter`）
+如果你直接用安装目录里的默认参数文件，也可以：
 
-### 启动方式
-
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe --tune
+```bash
+ros2 launch rm_buff_tracker buff_node.launch.py image_topic:=/camera/image_raw
 ```
 
-启动后会在 CMD 中提示：
+## 上机前需要改什么
 
-- `Tuner video path (press ENTER to use default)`
-- `Initial preview speed (0.25~8.0, default 1.0)`
+你至少要确认下面这些参数：
 
-也可以显式指定：
+- `color`
+  目标颜色，`red` 或 `blue`
+- `mode`
+  `small` 或 `big`
+- `detector_type`
+  上机建议用 `yolo`
+- `onnx_model_path`
+  模型路径，支持相对路径或绝对路径；推荐优先写 `models/best.onnx`
+- `freq`
+  相机和算法实际运行频率
+- `delta_t`
+  预测时间
+- `enable_compensation`
+  是否打开弹道补偿
 
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe ^
-  --tune ^
-  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\10_dark_red_small_near\parameter.yaml"
+ROS 2 参数样例已经给在：
+
+- `config/lab/buff_node_lab.yaml`
+
+## 机器人上怎么调试
+
+建议按这个顺序：
+
+1. 先确认图像流正常
+   看 `~/image_raw` 是否稳定、有时间戳、有画面
+2. 再确认模型能加载
+   看节点启动日志里是否报 ONNX 加载失败
+3. 再看 YOLO 初始化是否成功
+   观察日志里是否出现 `YOLO init locked target`
+4. 再看传统跟踪是否接住
+   看 `~/debug_image` 里 `R` 框和扇叶框是否稳定
+5. 最后看预测点是否稳定
+   观察 `~/prediction` 是否连续、是否落在合理位置
+
+推荐同时看这三个话题：
+
+- `~/debug_image`
+- `~/debug_state`
+- `~/prediction`
+- `~/target`
+
+常用调试命令可以直接这样跑：
+
+```bash
+ros2 topic hz /buff_tracker_node/prediction
+ros2 topic echo /buff_tracker_node/debug_state
+ros2 run rqt_image_view rqt_image_view
 ```
 
-### 调参流程
+如果你给节点加了 namespace，比如 `buff`，对应话题就会变成：
 
-1. 在 CMD 中输入视频路径（或回车使用默认）
-2. 输入预览速度
-3. 视频自动预览
-4. `SPACE` 冻结当前帧进入调参
-5. 选择：
-   - `roi`：中心 `R`
-   - `roi2`：待击打扇叶
-6. 调整滑条：
-   - `LH`
-   - `LS`
-   - `LV`
-   - `UH`
-   - `US`
-   - `UV`
-   - `kernel`
-   - `outside`
-   - `inside`
-7. `q` 保存回当前 `parameter.yaml`
-8. `Esc` 取消不保存
-
-### 额外说明
-
-- `Tracking / frame / mask / res` 窗口都支持自由缩放
-- 也支持直接跳到指定帧调参：
-
-```bat
-E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe ^
-  --tune ^
-  --tune-frame 245 ^
-  "E:\RM\rm_vision\RM_Buff_Tracker_GUT-main\examples\example_for_prediction\8_dark_blue_small\parameter.yaml"
+```text
+/buff/prediction
+/buff/debug_state
+/buff/debug_image
 ```
 
----
+## 当前需要你自己再接的部分
 
-## 大符 / 小符最简命令小抄
+兼容单节点 `buff_node` 目前仍输出图像坐标，不是最终云台控制量。独立空间通道已经能发布 yaw/pitch 和空间目标状态，但默认深度仍是固定距离近似。
 
-### 小符蓝
+如果你要接到机器人整套链路，后面通常还需要：
 
-```bat
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --prompt-path --mode small --color blue
-```
+- 实机相机内参、畸变和外参验证
+- 能量机关物理尺寸与 PnP 点序验证
+- 与云台控制节点的接口
+- 发射控制联动
 
-### 小符红
+也就是说，当前 `buff_node` 已经能完成：
 
-```bat
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --prompt-path --mode small --color red
-```
+- 接图
+- 自动初始化 / 重锁
+- 跟踪
+- 预测
+- 调试输出
 
-### 大符蓝
+但还没有直接变成“可发弹控制量”。
 
-```bat
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --prompt-path --mode big --color blue
-```
+## 文档入口
 
-### 大符红
+- `docs/README.md`
+- `tests/README.md`
 
-```bat
-set PATH=D:\develop\opencv_windows\opencv\build\x64\vc15\bin;%PATH% && "E:\RM\rm_vision\RM_Buff_Tracker_GUT_cpp\build\vs2022-release\Release\predict_example_main.exe" --prompt-path --mode big --color red
-```
+## License
 
----
-
-## 额外参数
-
-- `--python-root <path>`：Python 原版项目根目录
-- `--prompt-path`：普通运行时交互输入场景路径
-- `[parameter.yaml|video]`：位置参数，直接传入场景路径
-- `--video <path>`：显式指定视频路径，并尝试自动推断同目录 `parameter.yaml`
-- `--parameter <path>`：显式指定 `parameter.yaml`
-- `--tune`：进入调参面板模式
-- `--tune-frame <int>`：直接跳到指定帧调参
-- `--color blue|red`
-- `--mode small|big`
-- `--freq <int>`
-- `--deltaT <float>`
-- `--imshow 0|1`
-- `--r-box x,y,w,h`：跳过 `selectROI("roi", ...)`
-- `--fan-box x,y,w,h`：跳过 `selectROI("roi2", ...)`
-
----
-
-## 当前输出
-
-普通运行结束后会：
-
-1. 写出 angle 文本文件（例如 `8_dark_blue_small.txt`）
-2. 在普通显示模式下弹出角度曲线窗口
-
-如果使用：
-
-```bat
---imshow 0
-```
-
-则会跳过窗口显示与角度图，便于自动化验证。
-
----
-
-## 备注
-
-- 这个仓库当前重点仍是**离线复刻与调参**，不是最终比赛上场工程
-- 若后续继续往比赛版推进，下一优先级通常是：
-  1. 自动初始化
-  2. 自动恢复/重锁
-  3. 实时相机输入
-  4. 云台/发射联动
+源代码按 [MIT License](LICENSE) 发布。`models/best.onnx` 的训练数据来源与第三方再分发条款尚未完整记录；独立分发权重前请先核对相应许可，详见 `models/README.md`。
