@@ -7,11 +7,18 @@ is actually detecting the buff target on both full videos and single images.
 
 `yolo_video_test`
 `yolo_image_test`
+`camera_geometry_test`
+`angle_predictor_test`
 
 The executable is produced at:
 
 `build/vs2022-release/Release/yolo_video_test.exe`
 `build/vs2022-release/Release/yolo_image_test.exe`
+
+`camera_geometry_test` uses synthetic projections to cover pixel rays and
+IPPE candidate continuity. `angle_predictor_test` feeds an irregular timestamp
+sine-motion sequence and checks model fitting, analytic integration and reset
+after an observation gap.
 
 ## Single Image
 

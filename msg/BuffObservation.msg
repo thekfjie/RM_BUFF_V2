@@ -16,6 +16,8 @@ float64 confidence
 int32 class_id
 
 # Camera optical-frame angular/space observation.
+# camera_position is the predicted/compensated aim point. When PnP is ready,
+# camera_pose keeps the current measured blade pose for diagnostics.
 geometry_msgs/Vector3 aim_ray
 geometry_msgs/Point camera_position
 geometry_msgs/Pose camera_pose

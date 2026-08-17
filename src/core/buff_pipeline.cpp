@@ -21,12 +21,15 @@ bool BuffPipeline::initialize(const cv::Mat& frame,
     }
 
     observer_ = std::make_unique<AngleObserver>(config_.clockMode);
-    predictor_ = CreatePredictor(config_.moveMode, config_.deltaT, config_.freq);
+    predictor_ = CreatePredictor(config_.moveMode,
+                                 config_.deltaT,
+                                 config_.freq,
+                                 config_.bigPredictorConfig);
     initialized_ = true;
     return true;
 }
 
-PipelineOutput BuffPipeline::processFrame(cv::Mat& frame) {
+PipelineOutput BuffPipeline::processFrame(cv::Mat& frame, double timestampSeconds) {
     PipelineOutput output;
 
     if (!initialized_) {
@@ -50,7 +53,7 @@ PipelineOutput BuffPipeline::processFrame(cv::Mat& frame) {
     output.observedAngle = observedAngle;
     output.rawAngle = trans(relative.x, relative.y);
 
-    const PredictionResult prediction = predictor_->update(observedAngle);
+    const PredictionResult prediction = predictor_->update(observedAngle, timestampSeconds);
     output.debugState = predictor_->debugState();
 
     if (!prediction.ready) {
@@ -64,16 +67,13 @@ PipelineOutput BuffPipeline::processFrame(cv::Mat& frame) {
     output.predictedPoint.x = std::cos(predictedAngle) * detection.radius + detection.rBox.center2f().x;
     output.predictedPoint.y = std::sin(predictedAngle) * detection.radius + detection.rBox.center2f().y;
 
-    // Compensation
-    double angularVelocity = 0.0;
-    if (hasPrevAngle_) {
-        angularVelocity = (observedAngle - prevAngle_) * static_cast<double>(config_.freq);
-    }
-    output.angularVelocity = angularVelocity;
+    output.angularVelocity = prediction.angularVelocity;
 
     if (config_.enableCompensation) {
-        const double compensationOffset = compensator_.computeAngleOffset(angularVelocity);
-        output.compensatedDelta = prediction.deltaAngle + compensationOffset;
+        // Predict the complete horizon in one step. For big BUFF this integrates
+        // the fitted sine velocity instead of applying velocity * delay.
+        const double compensatedHorizon = config_.deltaT + compensator_.totalDelay();
+        output.compensatedDelta = predictor_->predictDelta(compensatedHorizon);
 
         const double compensatedAngle = output.rawAngle + output.compensatedDelta;
         output.compensatedPoint.x = std::cos(compensatedAngle) * detection.radius + detection.rBox.center2f().x;
@@ -82,9 +82,6 @@ PipelineOutput BuffPipeline::processFrame(cv::Mat& frame) {
         output.compensatedDelta = prediction.deltaAngle;
         output.compensatedPoint = output.predictedPoint;
     }
-
-    prevAngle_ = observedAngle;
-    hasPrevAngle_ = true;
 
     return output;
 }

@@ -11,6 +11,7 @@
 #include <std_msgs/msg/header.hpp>
 
 #include "core/types.hpp"
+#include "core/angle_processor.hpp"
 
 namespace gutcpp {
 
@@ -27,6 +28,8 @@ struct FramePacket {
 cv::Rect BBoxToRect(const BBox& bbox);
 std::optional<cv::Rect> ParseRoiParameter(const std::vector<int64_t>& values);
 int PreferredYoloSeedClassId(const std::string& color);
+void DeclareBigPredictorParameters(rclcpp::Node& node);
+BigPredictorConfig ReadBigPredictorConfig(const rclcpp::Node& node);
 std::vector<int64_t> GetIntegerArrayParameterOrEmpty(const rclcpp::Node& node, const char* name);
 std::string ResolveRosPath(const std::string& rawPath);
 sensor_msgs::msg::Image MakeBgrImageMessage(const std_msgs::msg::Header& header, const cv::Mat& image);

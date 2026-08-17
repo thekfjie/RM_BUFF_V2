@@ -84,6 +84,7 @@ private:
         this->declare_parameter<std::string>("mode", "small");
         this->declare_parameter<double>("delta_t", 0.2);
         this->declare_parameter<int>("freq", 50);
+        DeclareBigPredictorParameters(*this);
 
         this->declare_parameter<std::string>("detector_type", "yolo");
         this->declare_parameter<std::string>("onnx_model_path", "models/best.onnx");
@@ -126,6 +127,7 @@ private:
 
         config.deltaT = this->get_parameter("delta_t").as_double();
         config.freq = static_cast<int>(this->get_parameter("freq").as_int());
+        config.bigPredictorConfig = ReadBigPredictorConfig(*this);
         config.enableCompensation = this->get_parameter("enable_compensation").as_bool();
         config.compensationConfig.bulletSpeed = this->get_parameter("bullet_speed").as_double();
         config.compensationConfig.targetDistance = this->get_parameter("target_distance").as_double();
@@ -215,6 +217,7 @@ private:
 
         pipeline_ = std::move(newPipeline);
         pipelineInitialized_ = true;
+        pnpSolver_.reset();
         lostFrames_ = 0;
         RCLCPP_INFO(this->get_logger(), "BUFF detector pipeline initialized using %s", parameter_.detectorType.c_str());
         return true;
@@ -273,9 +276,14 @@ private:
         }
 
         cv::Mat mutableFrame = bgr.clone();
-        PipelineOutput output = pipeline_->processFrame(mutableFrame);
+        const rclcpp::Time imageStamp(packet.header.stamp);
+        const double timestampSeconds = imageStamp.nanoseconds() == 0
+            ? this->now().seconds()
+            : imageStamp.seconds();
+        PipelineOutput output = pipeline_->processFrame(mutableFrame, timestampSeconds);
         if (output.rBox.area() == 0.0) {
             ++lostFrames_;
+            pnpSolver_.reset();
             publishObservation(packet.header, output, false);
             publishDebugImage(packet.header, bgr, output, false, "detector lost");
             return;
@@ -343,21 +351,29 @@ private:
             }
 
             if (enablePnp_ && pnpObjectPoints_.size() >= 4) {
-                const std::optional<PnpResult> pnp = SolveBuffPnp(camera, output.keypoints, pnpObjectPoints_);
+                const std::optional<PnpResult> pnp =
+                    pnpSolver_.solve(camera, output.keypoints, pnpObjectPoints_);
                 if (pnp.has_value()) {
                     const cv::Point3d pnpPosition(pnp->tvec.at<double>(0),
                                                   pnp->tvec.at<double>(1),
                                                   pnp->tvec.at<double>(2));
-                    projection = ProjectCameraPointToAngles(pnpPosition);
+                    const double pnpDistance = std::sqrt(pnpPosition.x * pnpPosition.x +
+                                                         pnpPosition.y * pnpPosition.y +
+                                                         pnpPosition.z * pnpPosition.z);
+                    // PnP supplies metric depth, while the predicted/compensated
+                    // pixel supplies the future firing direction. Publishing the
+                    // raw current-blade tvec here would silently discard prediction.
+                    projection = ProjectPixelToRay(camera, aimPoint, pnpDistance);
                     if (projection.valid) {
                         observation.pnp_ready = true;
                         observation.source = kSourcePnp;
                         observation.yaw = projection.yaw;
                         observation.pitch = projection.pitch;
                         observation.aim_ray = ToVectorMsg(projection.ray);
-                        observation.camera_position = ToPointMsg(pnpPosition);
-                        observation.camera_pose.position = observation.camera_position;
+                        observation.camera_position = ToPointMsg(projection.point);
+                        observation.camera_pose.position = ToPointMsg(pnpPosition);
                         observation.camera_pose.orientation = RvecToQuaternion(pnp->rvec);
+                        observation.target_distance = pnpDistance;
                     }
                 }
             }
@@ -415,6 +431,7 @@ private:
     Parameter parameter_;
     PipelineConfig pipelineConfig_;
     std::vector<cv::Point3f> pnpObjectPoints_;
+    BuffPnpSolver pnpSolver_;
     std::optional<cv::Rect> staticRoi_;
     std::optional<cv::Rect> staticFanRoi_;
 

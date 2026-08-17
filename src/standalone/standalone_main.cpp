@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -211,7 +212,10 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                PipelineOutput output = pipeline->processFrame(frame);
+                const double timestampSeconds =
+                    static_cast<double>(frameCount - 1) /
+                    static_cast<double>(std::max(1, options.freq));
+                PipelineOutput output = pipeline->processFrame(frame, timestampSeconds);
                 if (output.rBox.area() == 0.0) {
                     if (useYoloAssist) {
                         ++lostFrames;

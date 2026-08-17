@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cmath>
 #include <iterator>
+#include <limits>
+#include <utility>
 
 #include <opencv2/calib3d.hpp>
 
@@ -17,6 +19,56 @@ constexpr std::array<int, 4> kBladeKeypointIndices = {0, 1, 3, 4};
 bool HasFinitePositiveDepth(const cv::Point3d& point) {
     return std::isfinite(point.x) && std::isfinite(point.y) &&
            std::isfinite(point.z) && point.z > 1e-6;
+}
+
+bool NormalizePoseVector(const cv::Mat& input, cv::Mat& output) {
+    if (input.empty() || input.total() != 3) {
+        return false;
+    }
+    cv::Mat vector = input.reshape(1, 3);
+    vector.convertTo(output, CV_64F);
+    for (int row = 0; row < 3; ++row) {
+        if (!std::isfinite(output.at<double>(row, 0))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+double ReprojectionError(const std::vector<cv::Point3f>& objectPoints,
+                         const std::vector<cv::Point2f>& imagePoints,
+                         const cv::Mat& rvec,
+                         const cv::Mat& tvec,
+                         const CameraModel& camera) {
+    std::vector<cv::Point2f> projected;
+    cv::projectPoints(objectPoints,
+                      rvec,
+                      tvec,
+                      camera.cameraMatrix,
+                      camera.distCoeffs,
+                      projected);
+    if (projected.size() != imagePoints.size() || projected.empty()) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    double squaredError = 0.0;
+    for (std::size_t index = 0; index < projected.size(); ++index) {
+        const cv::Point2f residual = projected[index] - imagePoints[index];
+        squaredError += static_cast<double>(residual.dot(residual));
+    }
+    return std::sqrt(squaredError / static_cast<double>(projected.size()));
+}
+
+double RotationDistance(const cv::Mat& lhsRvec, const cv::Mat& rhsRvec) {
+    cv::Mat lhsRotation;
+    cv::Mat rhsRotation;
+    cv::Rodrigues(lhsRvec, lhsRotation);
+    cv::Rodrigues(rhsRvec, rhsRotation);
+    const cv::Mat relative = lhsRotation.t() * rhsRotation;
+    const double trace = relative.at<double>(0, 0) +
+                         relative.at<double>(1, 1) +
+                         relative.at<double>(2, 2);
+    return std::acos(std::clamp((trace - 1.0) * 0.5, -1.0, 1.0));
 }
 
 } // namespace
@@ -74,9 +126,10 @@ RayProjection ProjectPixelToRay(const CameraModel& camera,
     return ProjectCameraPointToAngles(cameraPoint);
 }
 
-std::optional<PnpResult> SolveBuffPnp(const CameraModel& camera,
-                                      const Keypoints& keypoints,
-                                      const std::vector<cv::Point3f>& objectPoints) {
+std::optional<PnpResult> BuffPnpSolver::solve(
+    const CameraModel& camera,
+    const Keypoints& keypoints,
+    const std::vector<cv::Point3f>& objectPoints) {
     if (!IsCameraModelUsable(camera) || !keypoints.valid || objectPoints.size() < kBladeKeypointIndices.size()) {
         return std::nullopt;
     }
@@ -97,21 +150,93 @@ std::optional<PnpResult> SolveBuffPnp(const CameraModel& camera,
                 static_cast<std::ptrdiff_t>(kBladeKeypointIndices.size()),
                 std::back_inserter(selectedObjectPoints));
 
-    PnpResult result;
-    const int method = selectedObjectPoints.size() == 4 ? cv::SOLVEPNP_IPPE : cv::SOLVEPNP_ITERATIVE;
-    if (!cv::solvePnP(selectedObjectPoints,
-                      imagePoints,
-                      camera.cameraMatrix,
-                      camera.distCoeffs,
-                      result.rvec,
-                      result.tvec,
-                      false,
-                      method)) {
+    std::vector<cv::Mat> candidateRvecs;
+    std::vector<cv::Mat> candidateTvecs;
+    const int solutionCount = cv::solvePnPGeneric(selectedObjectPoints,
+                                                  imagePoints,
+                                                  camera.cameraMatrix,
+                                                  camera.distCoeffs,
+                                                  candidateRvecs,
+                                                  candidateTvecs,
+                                                  false,
+                                                  cv::SOLVEPNP_IPPE);
+    const int candidateCount = std::min(
+        solutionCount,
+        static_cast<int>(std::min(candidateRvecs.size(), candidateTvecs.size())));
+    if (candidateCount <= 0) {
         return std::nullopt;
     }
 
-    result.valid = result.tvec.rows == 3 && result.tvec.cols == 1;
-    return result.valid ? std::optional<PnpResult>(result) : std::nullopt;
+    int selectedIndex = -1;
+    double selectedScore = std::numeric_limits<double>::infinity();
+    double selectedReprojectionError = std::numeric_limits<double>::infinity();
+    cv::Mat selectedRvec;
+    cv::Mat selectedTvec;
+
+    for (int index = 0; index < candidateCount; ++index) {
+        cv::Mat rvec;
+        cv::Mat tvec;
+        if (!NormalizePoseVector(candidateRvecs[static_cast<std::size_t>(index)], rvec) ||
+            !NormalizePoseVector(candidateTvecs[static_cast<std::size_t>(index)], tvec) ||
+            tvec.at<double>(2, 0) <= 1e-6) {
+            continue;
+        }
+
+        const double reprojectionError = ReprojectionError(selectedObjectPoints,
+                                                           imagePoints,
+                                                           rvec,
+                                                           tvec,
+                                                           camera);
+        if (!std::isfinite(reprojectionError)) {
+            continue;
+        }
+
+        double score = reprojectionError;
+        if (hasPreviousSolution_) {
+            const double previousRange = std::max(0.1, cv::norm(previousTvec_));
+            const double translationDistance = cv::norm(tvec - previousTvec_) / previousRange;
+            const double rotationDistance = RotationDistance(previousRvec_, rvec);
+            score = 2.0 * translationDistance + rotationDistance + 0.02 * reprojectionError;
+        }
+
+        if (score < selectedScore) {
+            selectedIndex = index;
+            selectedScore = score;
+            selectedReprojectionError = reprojectionError;
+            selectedRvec = rvec;
+            selectedTvec = tvec;
+        }
+    }
+
+    if (selectedIndex < 0) {
+        return std::nullopt;
+    }
+
+    previousRvec_ = selectedRvec.clone();
+    previousTvec_ = selectedTvec.clone();
+    hasPreviousSolution_ = true;
+
+    PnpResult result;
+    result.valid = true;
+    result.rvec = std::move(selectedRvec);
+    result.tvec = std::move(selectedTvec);
+    result.reprojectionError = selectedReprojectionError;
+    result.candidateCount = candidateCount;
+    result.selectedIndex = selectedIndex;
+    return result;
+}
+
+void BuffPnpSolver::reset() {
+    hasPreviousSolution_ = false;
+    previousRvec_.release();
+    previousTvec_.release();
+}
+
+std::optional<PnpResult> SolveBuffPnp(const CameraModel& camera,
+                                      const Keypoints& keypoints,
+                                      const std::vector<cv::Point3f>& objectPoints) {
+    BuffPnpSolver solver;
+    return solver.solve(camera, keypoints, objectPoints);
 }
 
 } // namespace gutcpp

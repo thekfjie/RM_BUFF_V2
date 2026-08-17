@@ -6,6 +6,21 @@ buff_tracker_node:
     delta_t: 0.2
     freq: 60
 
+    # Big BUFF: timestamped velocity samples, omega grid search and inlier refit.
+    big_fit_omega_steps: 200
+    big_fit_update_stride: 5
+    big_fit_min_inliers: 100
+    big_fit_max_samples: 300
+    big_fit_min_inlier_ratio: 0.60
+    big_fit_inlier_threshold: 0.50
+    big_fit_min_omega: 1.884
+    big_fit_max_omega: 2.000
+    big_fit_min_amplitude: 0.780
+    big_fit_max_amplitude: 1.045
+    big_fit_max_abs_speed: 2.090
+    big_fit_max_observation_gap: 0.50
+    big_fit_max_phase_jump: 0.80
+
     detector_type: yolo
     onnx_model_path: "models/best.onnx"
     yolo_confidence: 0.25

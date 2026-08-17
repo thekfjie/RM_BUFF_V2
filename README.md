@@ -17,6 +17,8 @@ RoboMaster 能量机关识别、跟踪、预测与调试仓库。
 - 新增单图和视频调试工具，能直接检查模型框、关键点和推导出的 `R box`
 - ROS 2 节点已对齐 2.2 主流程，支持上机接图、预测输出、`BuffTarget` 目标状态和调试图输出
 - 新增实验性空间通道：Detector 与 Tracker 解耦，支持 CameraInfo、yaw/pitch、TF 和短时丢失外推
+- 大符预测改为真实时间戳速度样本、固定 ω 网格搜索、内点重拟合和正弦速度解析积分
+- PnP 使用 IPPE 多候选解，并按重投影误差与跨帧位姿连续性选择结果
 
 ## 已知现象
 
@@ -139,7 +141,7 @@ ros2 launch rm_buff_tracker buff_spatial_channel.launch.py \
   target_frame:=odom
 ```
 
-注意：示例配置默认关闭 PnP。此时空间位置是把像素射线延伸到配置的 `target_distance`，属于固定距离近似，不是真实深度；实车使用前必须补齐真实相机标定、目标物理点和外参验证。
+注意：示例配置默认关闭 PnP。此时空间位置是把像素射线延伸到配置的 `target_distance`，属于固定距离近似，不是真实深度；实车使用前必须补齐真实相机标定、与当前 5 关键点模型严格对应的目标物理点和外参验证。IPPE 双解选择已经接入；启用后用 PnP 提供真实距离、用预测像素提供未来发射方向，不能直接套用其它 9 关键点模型的点序和尺寸。
 
 ## 机器人上怎么接
 
@@ -224,8 +226,10 @@ ros2 launch rm_buff_tracker buff_node.launch.py image_topic:=/camera/image_raw
   相机和算法实际运行频率
 - `delta_t`
   预测时间
+- `big_fit_*`
+  大符鲁棒拟合参数：ω 搜索步数、样本窗口、最小内点数、内点阈值、物理参数范围和观测断流阈值。算法使用图像时间戳，不再依赖每帧严格等间隔；`freq` 只作为无时间戳入口的回退值
 - `enable_compensation`
-  是否打开弹道补偿
+  是否把弹丸飞行、通信和云台延迟并入预测时域；大符会对正弦速度进行完整积分，而不是使用瞬时速度乘延迟
 
 ROS 2 参数样例已经给在：
 
@@ -294,6 +298,10 @@ ros2 run rqt_image_view rqt_image_view
 
 - `docs/README.md`
 - `tests/README.md`
+
+## 算法参考
+
+- 浙江大学 Hello World 战队 [HWauto_buff2026](https://github.com/IC-Alan/HWauto_buff2026)：时间戳差分速度、固定 ω 后线性求解、IPPE 平面双解和正弦速度积分思路。当前仓库按自身 5 关键点模型和 ROS2 架构重新实现，没有直接复用对方 TensorRT 模型与物理点序
 
 ## License
 

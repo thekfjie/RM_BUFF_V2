@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include "detector_interface.hpp"
 #include "angle_processor.hpp"
@@ -13,6 +14,7 @@ struct PipelineConfig {
     ClockMode clockMode = ClockMode::Anticlockwise;
     double deltaT = 0.2;
     int freq = 50;
+    BigPredictorConfig bigPredictorConfig;
     bool enableCompensation = false;
     CompensationConfig compensationConfig;
 };
@@ -27,7 +29,9 @@ public:
                    std::optional<cv::Rect> rBoxHint = std::nullopt,
                    std::optional<cv::Rect> fanBoxHint = std::nullopt);
 
-    PipelineOutput processFrame(cv::Mat& frame);
+    PipelineOutput processFrame(
+        cv::Mat& frame,
+        double timestampSeconds = std::numeric_limits<double>::quiet_NaN());
 
     bool isInitialized() const { return initialized_; }
 
@@ -42,8 +46,6 @@ private:
     FlightTimeCompensator compensator_;
     PipelineConfig config_;
     bool initialized_ = false;
-    double prevAngle_ = 0.0;
-    bool hasPrevAngle_ = false;
 };
 
 } // namespace gutcpp

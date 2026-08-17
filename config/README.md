@@ -83,6 +83,7 @@ launch 默认参数文件已经指向：
 - `mode`
 - `freq`
 - `deltaT`
+- `big_fit_*`（大符时间戳拟合、ω 搜索、内点和断流阈值）
 - `detector`
 - `onnxModelPath`
 - `yoloRelockIntervalFrames`

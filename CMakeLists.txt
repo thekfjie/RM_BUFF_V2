@@ -106,9 +106,15 @@ add_executable(camera_geometry_test
 )
 target_link_libraries(camera_geometry_test PRIVATE buff_core)
 
+add_executable(angle_predictor_test
+    tests/angle_predictor_test.cpp
+)
+target_link_libraries(angle_predictor_test PRIVATE buff_core)
+
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME camera_geometry_test COMMAND camera_geometry_test)
+    add_test(NAME angle_predictor_test COMMAND angle_predictor_test)
 endif()
 
 if(WIN32 AND HAVE_ONNXRUNTIME)
@@ -116,7 +122,7 @@ if(WIN32 AND HAVE_ONNXRUNTIME)
     set(ONNXRUNTIME_PROVIDERS_SHARED_DLL "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_shared.dll")
 
     if(EXISTS "${ONNXRUNTIME_DLL}")
-        foreach(runtime_target predict_example_main yolo_video_test yolo_image_test camera_geometry_test)
+        foreach(runtime_target predict_example_main yolo_video_test yolo_image_test camera_geometry_test angle_predictor_test)
             add_custom_command(TARGET ${runtime_target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "${ONNXRUNTIME_DLL}"

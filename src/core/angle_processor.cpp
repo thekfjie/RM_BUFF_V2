@@ -1,81 +1,16 @@
 #include "angle_processor.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
-
-#include <opencv2/core/optim.hpp>
+#include <stdexcept>
+#include <utility>
 
 namespace gutcpp {
 
 namespace {
 
-struct FitBounds {
-    double aMin = 0.0, aMax = 1.0;
-    double wMin = 0.0, wMax = 10.0;
-    double offsetBase = 0.0;  // offset = offsetBase - amplitude
-};
-
-class SinFitObjective final : public cv::DownhillSolver::Function {
-public:
-    SinFitObjective(std::vector<double> y, FitBounds bounds)
-        : y_(std::move(y)), bounds_(bounds) {}
-
-    int getDims() const override {
-        return 3;
-    }
-
-    double calc(const double* parameters) const override {
-        const double amplitude = parameters[0];
-        const double omega = parameters[1];
-        const double phase = parameters[2];
-        const double offset = bounds_.offsetBase - amplitude;
-        if (!std::isfinite(amplitude) || !std::isfinite(omega) || !std::isfinite(phase)) {
-            return 1e18;
-        }
-
-        double penalty = 0.0;
-        if (amplitude < bounds_.aMin) penalty += (bounds_.aMin - amplitude) * (bounds_.aMin - amplitude) * 1e6;
-        if (amplitude > bounds_.aMax) penalty += (amplitude - bounds_.aMax) * (amplitude - bounds_.aMax) * 1e6;
-        if (omega < bounds_.wMin) penalty += (bounds_.wMin - omega) * (bounds_.wMin - omega) * 1e6;
-        if (omega > bounds_.wMax) penalty += (omega - bounds_.wMax) * (omega - bounds_.wMax) * 1e6;
-
-        double error = 0.0;
-        for (std::size_t index = 0; index < y_.size(); ++index) {
-            const double predicted = amplitude * std::sin(omega * static_cast<double>(index) + phase) + offset;
-            const double diff = predicted - y_[index];
-            error += diff * diff;
-        }
-        return error + penalty;
-    }
-
-private:
-    std::vector<double> y_;
-    FitBounds bounds_;
-};
-
-double EstimateDominantFrequency(const std::vector<double>& y) {
-    const int n = static_cast<int>(y.size());
-    double bestMagnitude = -1.0;
-    double bestFrequency = 1.0 / static_cast<double>(std::max(1, n));
-    for (int k = 1; k < n; ++k) {
-        double re = 0.0;
-        double im = 0.0;
-        for (int index = 0; index < n; ++index) {
-            const double angle = -2.0 * CV_PI * static_cast<double>(k) * static_cast<double>(index) /
-                                 static_cast<double>(n);
-            re += y[static_cast<std::size_t>(index)] * std::cos(angle);
-            im += y[static_cast<std::size_t>(index)] * std::sin(angle);
-        }
-        const double magnitude = std::sqrt(re * re + im * im);
-        if (magnitude > bestMagnitude) {
-            bestMagnitude = magnitude;
-            const double frequency = (k <= n / 2) ? static_cast<double>(k) / static_cast<double>(n)
-                                                  : static_cast<double>(n - k) / static_cast<double>(n);
-            bestFrequency = std::abs(frequency);
-        }
-    }
-    return bestFrequency;
-}
+constexpr double kMinimumObservationDt = 1e-5;
 
 }
 
@@ -204,9 +139,11 @@ std::pair<bool, int> FitStartDetect::update(double data) {
 
 SmallPredictor::SmallPredictor(double deltaT, int freq)
     : deltaAngle_(kSmallRuneSpeed * deltaT),
+      defaultPredictionHorizon_(std::max(0.0, deltaT)),
       warmupFrames_(std::max(1, static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT)))) {}
 
-PredictionResult SmallPredictor::update(double data) {
+PredictionResult SmallPredictor::update(double data, double timestampSeconds) {
+    (void) timestampSeconds;
     ++frameCount_;
     if (frameCount_ == 1) {
         firstAngle_ = data;
@@ -215,108 +152,301 @@ PredictionResult SmallPredictor::update(double data) {
         if (direction_ == 0.0) {
             direction_ = (data - firstAngle_ >= 0.0) ? 1.0 : -1.0;
         }
-        return {true, direction_ * deltaAngle_};
+        return {true,
+                predictDelta(defaultPredictionHorizon_),
+                direction_ * kSmallRuneSpeed,
+                true};
     }
-    return {false, 0.0};
+    return {};
 }
 
-BigPredictor::BigPredictor(double deltaT, int freq)
-    : frameInterval_(static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT))),
-      freq_(freq),
-      startFit_(),
-      smooth_(20),
-      slidWindow_(static_cast<std::size_t>(frameInterval_)) {}
-
-double BigPredictor::targetValue(double x, const FitState& fitState) {
-    return fitState.amplitude * std::sin(fitState.omega * x + fitState.phase) + fitState.offset;
+double SmallPredictor::predictDelta(double horizonSeconds) const {
+    return direction_ * kSmallRuneSpeed * std::max(0.0, horizonSeconds);
 }
 
-BigPredictor::FitState BigPredictor::fitSinusoid(const std::vector<double>& y) const {
-    if (y.size() < 4) {
-        throw std::runtime_error("Not enough samples to fit big predictor");
+BigPredictor::BigPredictor(double deltaT, int freq, BigPredictorConfig config)
+    : defaultPredictionHorizon_(std::max(0.0, deltaT)),
+      freq_(std::max(1, freq)),
+      config_(std::move(config)) {
+    config_.omegaSearchSteps = std::max(2, config_.omegaSearchSteps);
+    config_.fitUpdateStride = std::max(1, config_.fitUpdateStride);
+    config_.minInliers = std::max<std::size_t>(3, config_.minInliers);
+    config_.maxSamples = std::max(config_.minInliers, config_.maxSamples);
+    config_.minInlierRatio = std::clamp(config_.minInlierRatio, 0.0, 1.0);
+    config_.inlierThreshold = std::max(1e-6, config_.inlierThreshold);
+    if (config_.minOmega > config_.maxOmega) {
+        std::swap(config_.minOmega, config_.maxOmega);
+    }
+    if (config_.minAmplitude > config_.maxAmplitude) {
+        std::swap(config_.minAmplitude, config_.maxAmplitude);
+    }
+    config_.minAmplitude = std::max(0.0, config_.minAmplitude);
+    config_.maxAmplitude = std::max(config_.minAmplitude, config_.maxAmplitude);
+    config_.maxAbsSpeed = std::max(1e-6, config_.maxAbsSpeed);
+    config_.maxObservationGap = std::max(kMinimumObservationDt, config_.maxObservationGap);
+    config_.maxPhaseJump = std::max(1e-6, config_.maxPhaseJump);
+}
+
+double BigPredictor::velocityAt(double timestamp, const FitState& fitState) {
+    const double relativeTime = timestamp - fitState.timeOrigin;
+    return fitState.amplitude * std::sin(fitState.omega * relativeTime + fitState.phase) +
+           fitState.offset;
+}
+
+double BigPredictor::integrateVelocity(double startTimestamp,
+                                       double horizonSeconds,
+                                       const FitState& fitState) {
+    const double horizon = std::max(0.0, horizonSeconds);
+    if (horizon == 0.0) {
+        return 0.0;
     }
 
-    // Physical rule: spd = a*sin(w*t) + b, a∈[0.780,1.045], w∈[1.884,2.000], b=2.090-a
-    // Fitting data diffY[i] ≈ speed * (frameInterval/freq), index i is per-frame
-    // So: a_fit = a_phys * timeScale, w_fit = w_phys / freq, offset_fit = b_phys * timeScale
-    const double timeScale = static_cast<double>(frameInterval_) / static_cast<double>(freq_);
-    const double freqScale = 1.0 / static_cast<double>(freq_);
+    const double phaseAtStart =
+        fitState.omega * (startTimestamp - fitState.timeOrigin) + fitState.phase;
+    if (std::abs(fitState.omega) <= 1e-9) {
+        return (fitState.amplitude * std::sin(phaseAtStart) + fitState.offset) * horizon;
+    }
 
-    const FitBounds bounds{
-        0.780 * timeScale,   // aMin
-        1.045 * timeScale,   // aMax
-        1.884 * freqScale,   // wMin
-        2.000 * freqScale,   // wMax
-        2.090 * timeScale    // offsetBase: offset = offsetBase - amplitude
-    };
+    return fitState.offset * horizon +
+           fitState.amplitude *
+               (std::cos(phaseAtStart) -
+                std::cos(phaseAtStart + fitState.omega * horizon)) /
+               fitState.omega;
+}
 
-    auto evaluateError = [&](const FitState& state) {
-        double error = 0.0;
-        for (std::size_t index = 0; index < y.size(); ++index) {
-            const double predicted = state.amplitude * std::sin(state.omega * static_cast<double>(index) + state.phase) +
-                                     state.offset;
-            const double diff = predicted - y[index];
-            error += diff * diff;
+bool BigPredictor::solveLinearModel(const std::vector<const SpeedSample*>& samples,
+                                    double omega,
+                                    double timeOrigin,
+                                    double& sinCoefficient,
+                                    double& cosCoefficient,
+                                    double& offset) const {
+    if (samples.size() < 3 || !std::isfinite(omega)) {
+        return false;
+    }
+
+    cv::Mat design(static_cast<int>(samples.size()), 3, CV_64F);
+    cv::Mat observations(static_cast<int>(samples.size()), 1, CV_64F);
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        const double relativeTime = samples[index]->timestamp - timeOrigin;
+        design.at<double>(static_cast<int>(index), 0) = std::sin(omega * relativeTime);
+        design.at<double>(static_cast<int>(index), 1) = std::cos(omega * relativeTime);
+        design.at<double>(static_cast<int>(index), 2) = 1.0;
+        observations.at<double>(static_cast<int>(index), 0) = samples[index]->velocity;
+    }
+
+    cv::Mat parameters;
+    if (!cv::solve(design, observations, parameters, cv::DECOMP_SVD) ||
+        parameters.rows != 3 || parameters.cols != 1) {
+        return false;
+    }
+
+    sinCoefficient = parameters.at<double>(0, 0);
+    cosCoefficient = parameters.at<double>(1, 0);
+    offset = parameters.at<double>(2, 0);
+    return std::isfinite(sinCoefficient) && std::isfinite(cosCoefficient) &&
+           std::isfinite(offset);
+}
+
+bool BigPredictor::fitSinusoid() {
+    if (speedSamples_.size() < 3) {
+        fitState_.reset();
+        return false;
+    }
+
+    std::vector<const SpeedSample*> allSamples;
+    allSamples.reserve(speedSamples_.size());
+    for (const SpeedSample& sample : speedSamples_) {
+        allSamples.push_back(&sample);
+    }
+
+    const double timeOrigin = speedSamples_.front().timestamp;
+    std::optional<FitState> bestFit;
+    for (int step = 0; step < config_.omegaSearchSteps; ++step) {
+        const double ratio = static_cast<double>(step) /
+                             static_cast<double>(config_.omegaSearchSteps - 1);
+        const double omega = config_.minOmega +
+                             (config_.maxOmega - config_.minOmega) * ratio;
+
+        double sinCoefficient = 0.0;
+        double cosCoefficient = 0.0;
+        double offset = 0.0;
+        if (!solveLinearModel(allSamples,
+                              omega,
+                              timeOrigin,
+                              sinCoefficient,
+                              cosCoefficient,
+                              offset)) {
+            continue;
         }
-        return error;
-    };
 
-    FitState fitState;
-    const auto [minIt, maxIt] = std::minmax_element(y.begin(), y.end());
-    fitState.amplitude = std::clamp(*maxIt - *minIt, bounds.aMin, bounds.aMax);
-    fitState.omega = std::clamp(2.0 * CV_PI * EstimateDominantFrequency(y), bounds.wMin, bounds.wMax);
-    fitState.phase = 0.0;
-    fitState.offset = bounds.offsetBase - fitState.amplitude;
-
-    cv::Mat params = (cv::Mat_<double>(3, 1) << fitState.amplitude, fitState.omega, fitState.phase);
-    cv::Mat step = (cv::Mat_<double>(3, 1) << (bounds.aMax - bounds.aMin) * 0.3,
-                   (bounds.wMax - bounds.wMin) * 0.5, 0.5);
-
-    const FitState initialState = fitState;
-    const double initialError = evaluateError(initialState);
-
-    cv::Ptr<cv::DownhillSolver> solver = cv::DownhillSolver::create();
-    solver->setFunction(cv::makePtr<SinFitObjective>(y, bounds));
-    solver->setInitStep(step);
-    solver->setTermCriteria(cv::TermCriteria(cv::TermCriteria::MAX_ITER + cv::TermCriteria::EPS, 5000, 1e-9));
-    solver->minimize(params);
-
-    FitState optimizedState;
-    optimizedState.amplitude = std::clamp(params.at<double>(0, 0), bounds.aMin, bounds.aMax);
-    optimizedState.omega = std::clamp(params.at<double>(1, 0), bounds.wMin, bounds.wMax);
-    optimizedState.phase = params.at<double>(2, 0);
-    optimizedState.offset = bounds.offsetBase - optimizedState.amplitude;
-
-    const double optimizedError = evaluateError(optimizedState);
-    if (std::isfinite(optimizedError) && optimizedError <= initialError) {
-        fitState = optimizedState;
-    }
-    return fitState;
-}
-
-PredictionResult BigPredictor::update(double data) {
-    y_.push_back(data);
-    ++x_;
-    slidWindow_.push(data);
-    if (slidWindow_.isFull()) {
-        double diff = slidWindow_.front() - slidWindow_.rear();
-        diff = smooth_.update(diff);
-        diffY_.push_back(diff);
-        slidWindow_.pop();
-        if (!isStart_) {
-            const auto [flag, _] = startFit_.update(diff);
-            (void) _;
-            isStart_ = flag;
-        }
-        if (isStart_) {
-            if (!fitState_.has_value() || fitUpdateCounter_ % frameInterval_ == 0) {
-                fitState_ = fitSinusoid(diffY_);
+        std::vector<const SpeedSample*> inliers;
+        inliers.reserve(allSamples.size());
+        for (const SpeedSample* sample : allSamples) {
+            const double relativeTime = sample->timestamp - timeOrigin;
+            const double predicted =
+                sinCoefficient * std::sin(omega * relativeTime) +
+                cosCoefficient * std::cos(omega * relativeTime) + offset;
+            if (std::abs(sample->velocity - predicted) < config_.inlierThreshold) {
+                inliers.push_back(sample);
             }
-            ++fitUpdateCounter_;
-            return {true, targetValue(static_cast<double>(x_ + frameInterval_), fitState_.value())};
+        }
+        if (inliers.size() < 3) {
+            continue;
+        }
+
+        if (!solveLinearModel(inliers,
+                              omega,
+                              timeOrigin,
+                              sinCoefficient,
+                              cosCoefficient,
+                              offset)) {
+            continue;
+        }
+
+        const double amplitude = std::hypot(sinCoefficient, cosCoefficient);
+        if (!std::isfinite(amplitude) ||
+            amplitude < config_.minAmplitude || amplitude > config_.maxAmplitude ||
+            std::abs(offset) + amplitude >
+                config_.maxAbsSpeed + 2.0 * config_.inlierThreshold) {
+            continue;
+        }
+
+        std::size_t finalInliers = 0;
+        double squaredError = 0.0;
+        for (const SpeedSample* sample : allSamples) {
+            const double relativeTime = sample->timestamp - timeOrigin;
+            const double predicted =
+                sinCoefficient * std::sin(omega * relativeTime) +
+                cosCoefficient * std::cos(omega * relativeTime) + offset;
+            const double residual = sample->velocity - predicted;
+            if (std::abs(residual) < config_.inlierThreshold) {
+                ++finalInliers;
+                squaredError += residual * residual;
+            }
+        }
+        if (finalInliers < 3) {
+            continue;
+        }
+
+        FitState candidate;
+        candidate.amplitude = amplitude;
+        candidate.omega = omega;
+        candidate.phase = std::atan2(cosCoefficient, sinCoefficient);
+        candidate.offset = offset;
+        candidate.timeOrigin = timeOrigin;
+        candidate.inliers = finalInliers;
+        candidate.rmse = std::sqrt(squaredError / static_cast<double>(finalInliers));
+
+        if (!bestFit.has_value() ||
+            candidate.inliers > bestFit->inliers ||
+            (candidate.inliers == bestFit->inliers && candidate.rmse < bestFit->rmse)) {
+            bestFit = candidate;
         }
     }
-    return {false, 0.0};
+
+    fitState_ = bestFit;
+    return modelReady();
+}
+
+void BigPredictor::resetFit() {
+    speedSamples_.clear();
+    fitState_.reset();
+    currentAngularVelocity_ = 0.0;
+    acceptedSamplesSinceFit_ = 0;
+}
+
+double BigPredictor::normalizeTimestamp(double timestampSeconds) {
+    if (std::isfinite(timestampSeconds)) {
+        syntheticTimestamp_ = timestampSeconds;
+        return timestampSeconds;
+    }
+
+    if (hasPreviousObservation_) {
+        syntheticTimestamp_ += 1.0 / static_cast<double>(freq_);
+    }
+    return syntheticTimestamp_;
+}
+
+bool BigPredictor::modelReady() const {
+    if (!fitState_.has_value() || speedSamples_.empty()) {
+        return false;
+    }
+    const double inlierRatio = static_cast<double>(fitState_->inliers) /
+                               static_cast<double>(speedSamples_.size());
+    return fitState_->inliers >= config_.minInliers &&
+           inlierRatio >= config_.minInlierRatio &&
+           std::isfinite(fitState_->rmse);
+}
+
+PredictionResult BigPredictor::update(double data, double timestampSeconds) {
+    const double timestamp = normalizeTimestamp(timestampSeconds);
+    currentTimestamp_ = timestamp;
+    if (!std::isfinite(data) || !std::isfinite(timestamp)) {
+        return {};
+    }
+
+    if (!hasPreviousObservation_) {
+        hasPreviousObservation_ = true;
+        previousAngle_ = data;
+        previousTimestamp_ = timestamp;
+        return {};
+    }
+
+    const double dt = timestamp - previousTimestamp_;
+    if (dt <= kMinimumObservationDt || dt > config_.maxObservationGap) {
+        resetFit();
+        previousAngle_ = data;
+        previousTimestamp_ = timestamp;
+        return {};
+    }
+
+    const double phaseDelta = data - previousAngle_;
+    previousAngle_ = data;
+    previousTimestamp_ = timestamp;
+    if (!std::isfinite(phaseDelta) || std::abs(phaseDelta) > config_.maxPhaseJump) {
+        resetFit();
+        return {};
+    }
+
+    const double velocity = phaseDelta / dt;
+    if (!std::isfinite(velocity) || std::abs(velocity) > config_.maxAbsSpeed) {
+        const bool ready = modelReady();
+        currentAngularVelocity_ = ready ? velocityAt(timestamp, fitState_.value()) : 0.0;
+        return {ready,
+                ready ? predictDelta(defaultPredictionHorizon_) : 0.0,
+                currentAngularVelocity_,
+                ready};
+    }
+
+    currentAngularVelocity_ = velocity;
+    speedSamples_.push_back({timestamp - dt * 0.5, velocity});
+    while (speedSamples_.size() > config_.maxSamples) {
+        speedSamples_.pop_front();
+    }
+
+    ++acceptedSamplesSinceFit_;
+    if (speedSamples_.size() >= config_.minInliers &&
+        (!fitState_.has_value() ||
+         acceptedSamplesSinceFit_ >= static_cast<std::size_t>(config_.fitUpdateStride))) {
+        fitSinusoid();
+        acceptedSamplesSinceFit_ = 0;
+    }
+
+    const bool ready = modelReady();
+    if (ready) {
+        currentAngularVelocity_ = velocityAt(timestamp, fitState_.value());
+    }
+    return {ready,
+            ready ? predictDelta(defaultPredictionHorizon_) : 0.0,
+            currentAngularVelocity_,
+            ready};
+}
+
+double BigPredictor::predictDelta(double horizonSeconds) const {
+    if (!modelReady()) {
+        return 0.0;
+    }
+    return integrateVelocity(currentTimestamp_, horizonSeconds, fitState_.value());
 }
 
 AngleObserver::AngleObserver(ClockMode clockMode) : clockMode_(clockMode) {}
@@ -387,26 +517,31 @@ std::string SmallPredictor::debugState() const {
 
 std::string BigPredictor::debugState() const {
     std::ostringstream oss;
-    oss << "Big,isStart=" << isStart_ << ",refitCount=" << fitUpdateCounter_;
+    oss << "Big,ready=" << modelReady()
+        << ",samples=" << speedSamples_.size()
+        << ",v=" << currentAngularVelocity_;
     if (fitState_.has_value()) {
         const auto& fs = fitState_.value();
-        const double timeScale = static_cast<double>(frameInterval_) / static_cast<double>(freq_);
-        const double freqScale = 1.0 / static_cast<double>(freq_);
-        oss << ",a_fit=" << fs.amplitude << ",w_fit=" << fs.omega
-            << ",phase=" << fs.phase << ",offset=" << fs.offset
-            << ",a_phys=" << fs.amplitude / timeScale
-            << ",w_phys=" << fs.omega / freqScale;
+        oss << ",inliers=" << fs.inliers
+            << ",rmse=" << fs.rmse
+            << ",a=" << fs.amplitude
+            << ",w=" << fs.omega
+            << ",phase=" << fs.phase
+            << ",offset=" << fs.offset;
     } else {
         oss << ",fit=none";
     }
     return oss.str();
 }
 
-std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode, double deltaT, int freq) {
+std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode,
+                                                    double deltaT,
+                                                    int freq,
+                                                    const BigPredictorConfig& bigConfig) {
     if (moveMode == MoveMode::Small) {
         return std::make_unique<SmallPredictor>(deltaT, freq);
     }
-    return std::make_unique<BigPredictor>(deltaT, freq);
+    return std::make_unique<BigPredictor>(deltaT, freq, bigConfig);
 }
 
 }

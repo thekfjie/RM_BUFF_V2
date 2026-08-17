@@ -42,6 +42,7 @@ void BuffNode::declareParameters() {
     this->declare_parameter<std::string>("mode", "small");
     this->declare_parameter<double>("delta_t", 0.2);
     this->declare_parameter<int>("freq", 50);
+    DeclareBigPredictorParameters(*this);
 
     this->declare_parameter<std::string>("detector_type", "hsv");
     this->declare_parameter<std::string>("onnx_model_path", "");
@@ -84,6 +85,7 @@ PipelineConfig BuffNode::buildPipelineConfig() const {
 
     config.deltaT = this->get_parameter("delta_t").as_double();
     config.freq = static_cast<int>(this->get_parameter("freq").as_int());
+    config.bigPredictorConfig = ReadBigPredictorConfig(*this);
     config.enableCompensation = this->get_parameter("enable_compensation").as_bool();
     config.compensationConfig.bulletSpeed = this->get_parameter("bullet_speed").as_double();
     config.compensationConfig.targetDistance = this->get_parameter("target_distance").as_double();
@@ -327,7 +329,7 @@ void BuffNode::publishDebugImage(const std_msgs::msg::Header& header,
 void BuffNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
     ++frameCount_;
 
-    const cv::Mat bgr = MakeBgrFrame(*msg);
+    cv::Mat bgr = MakeBgrFrame(*msg);
 
     if (!pipelineInitialized_) {
         bool initialized = false;
@@ -345,7 +347,11 @@ void BuffNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
         }
     }
 
-    PipelineOutput output = pipeline_->processFrame(bgr);
+    const rclcpp::Time imageStamp(msg->header.stamp);
+    const double timestampSeconds = imageStamp.nanoseconds() == 0
+        ? this->now().seconds()
+        : imageStamp.seconds();
+    PipelineOutput output = pipeline_->processFrame(bgr, timestampSeconds);
     if (output.rBox.area() == 0.0) {
         ++lostFrames_;
 

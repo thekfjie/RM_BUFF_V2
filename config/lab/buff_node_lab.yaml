@@ -9,6 +9,21 @@ buff_tracker_node:
     # 算法运行频率，通常按相机实际频率填写
     freq: 50
 
+    # 大符：真实时间戳速度样本 + ω 网格搜索 + 内点重拟合
+    big_fit_omega_steps: 200
+    big_fit_update_stride: 5
+    big_fit_min_inliers: 100
+    big_fit_max_samples: 300
+    big_fit_min_inlier_ratio: 0.60
+    big_fit_inlier_threshold: 0.50
+    big_fit_min_omega: 1.884
+    big_fit_max_omega: 2.000
+    big_fit_min_amplitude: 0.780
+    big_fit_max_amplitude: 1.045
+    big_fit_max_abs_speed: 2.090
+    big_fit_max_observation_gap: 0.50
+    big_fit_max_phase_jump: 0.80
+
     # 检测模式：yolo=模型初始化/重锁，hsv=纯传统固定 ROI
     detector_type: yolo
     # YOLO 模型路径，建议写相对路径

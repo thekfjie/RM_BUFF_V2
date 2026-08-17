@@ -30,6 +30,22 @@ struct PnpResult {
     bool valid = false;
     cv::Mat rvec;
     cv::Mat tvec;
+    double reprojectionError = 0.0;
+    int candidateCount = 0;
+    int selectedIndex = -1;
+};
+
+class BuffPnpSolver {
+public:
+    std::optional<PnpResult> solve(const CameraModel& camera,
+                                   const Keypoints& keypoints,
+                                   const std::vector<cv::Point3f>& objectPoints);
+    void reset();
+
+private:
+    bool hasPreviousSolution_ = false;
+    cv::Mat previousRvec_;
+    cv::Mat previousTvec_;
 };
 
 bool IsCameraModelUsable(const CameraModel& camera);

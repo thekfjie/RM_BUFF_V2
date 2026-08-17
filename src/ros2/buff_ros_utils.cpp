@@ -41,6 +41,42 @@ int PreferredYoloSeedClassId(const std::string& color) {
     return (color == "red") ? 1 : 2;
 }
 
+void DeclareBigPredictorParameters(rclcpp::Node& node) {
+    node.declare_parameter<int>("big_fit_omega_steps", 200);
+    node.declare_parameter<int>("big_fit_update_stride", 5);
+    node.declare_parameter<int>("big_fit_min_inliers", 100);
+    node.declare_parameter<int>("big_fit_max_samples", 300);
+    node.declare_parameter<double>("big_fit_min_inlier_ratio", 0.60);
+    node.declare_parameter<double>("big_fit_inlier_threshold", 0.50);
+    node.declare_parameter<double>("big_fit_min_omega", 1.884);
+    node.declare_parameter<double>("big_fit_max_omega", 2.000);
+    node.declare_parameter<double>("big_fit_min_amplitude", 0.780);
+    node.declare_parameter<double>("big_fit_max_amplitude", 1.045);
+    node.declare_parameter<double>("big_fit_max_abs_speed", 2.090);
+    node.declare_parameter<double>("big_fit_max_observation_gap", 0.50);
+    node.declare_parameter<double>("big_fit_max_phase_jump", 0.80);
+}
+
+BigPredictorConfig ReadBigPredictorConfig(const rclcpp::Node& node) {
+    BigPredictorConfig config;
+    config.omegaSearchSteps = static_cast<int>(node.get_parameter("big_fit_omega_steps").as_int());
+    config.fitUpdateStride = static_cast<int>(node.get_parameter("big_fit_update_stride").as_int());
+    config.minInliers = static_cast<std::size_t>(
+        std::max<int64_t>(3, node.get_parameter("big_fit_min_inliers").as_int()));
+    config.maxSamples = static_cast<std::size_t>(
+        std::max<int64_t>(3, node.get_parameter("big_fit_max_samples").as_int()));
+    config.minInlierRatio = node.get_parameter("big_fit_min_inlier_ratio").as_double();
+    config.inlierThreshold = node.get_parameter("big_fit_inlier_threshold").as_double();
+    config.minOmega = node.get_parameter("big_fit_min_omega").as_double();
+    config.maxOmega = node.get_parameter("big_fit_max_omega").as_double();
+    config.minAmplitude = node.get_parameter("big_fit_min_amplitude").as_double();
+    config.maxAmplitude = node.get_parameter("big_fit_max_amplitude").as_double();
+    config.maxAbsSpeed = node.get_parameter("big_fit_max_abs_speed").as_double();
+    config.maxObservationGap = node.get_parameter("big_fit_max_observation_gap").as_double();
+    config.maxPhaseJump = node.get_parameter("big_fit_max_phase_jump").as_double();
+    return config;
+}
+
 std::vector<int64_t> GetIntegerArrayParameterOrEmpty(const rclcpp::Node& node, const char* name) {
     rclcpp::Parameter parameter;
     if (!node.get_parameter(name, parameter)) {

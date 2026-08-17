@@ -1,5 +1,7 @@
 #pragma once
 
+#include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +24,24 @@ enum class ClockMode {
 struct PredictionResult {
     bool ready = false;
     double deltaAngle = 0.0;
+    double angularVelocity = 0.0;
+    bool modelReady = false;
+};
+
+struct BigPredictorConfig {
+    int omegaSearchSteps = 200;
+    int fitUpdateStride = 5;
+    std::size_t minInliers = 100;
+    std::size_t maxSamples = 300;
+    double minInlierRatio = 0.60;
+    double inlierThreshold = 0.50;
+    double minOmega = 1.884;
+    double maxOmega = 2.000;
+    double minAmplitude = 0.780;
+    double maxAmplitude = 1.045;
+    double maxAbsSpeed = 2.090;
+    double maxObservationGap = 0.50;
+    double maxPhaseJump = 0.80;
 };
 
 double EuclideanDistance(const cv::Point2f& p1, const cv::Point2f& p2);
@@ -80,19 +100,26 @@ private:
 class PredictorInterface {
 public:
     virtual ~PredictorInterface() = default;
-    virtual PredictionResult update(double data) = 0;
+    virtual PredictionResult update(
+        double data,
+        double timestampSeconds = std::numeric_limits<double>::quiet_NaN()) = 0;
+    virtual double predictDelta(double horizonSeconds) const = 0;
     virtual std::string debugState() const { return ""; }
 };
 
 class SmallPredictor final : public PredictorInterface {
 public:
     SmallPredictor(double deltaT, int freq);
-    PredictionResult update(double data) override;
+    PredictionResult update(
+        double data,
+        double timestampSeconds = std::numeric_limits<double>::quiet_NaN()) override;
+    double predictDelta(double horizonSeconds) const override;
     std::string debugState() const override;
 
 private:
     static constexpr double kSmallRuneSpeed = CV_PI / 3.0;  // 1/3π rad/s per rules
     double deltaAngle_ = 0.0;
+    double defaultPredictionHorizon_ = 0.0;
     int warmupFrames_ = 0;
     int frameCount_ = 0;
     double firstAngle_ = 0.0;
@@ -101,8 +128,11 @@ private:
 
 class BigPredictor final : public PredictorInterface {
 public:
-    BigPredictor(double deltaT, int freq);
-    PredictionResult update(double data) override;
+    BigPredictor(double deltaT, int freq, BigPredictorConfig config = {});
+    PredictionResult update(
+        double data,
+        double timestampSeconds = std::numeric_limits<double>::quiet_NaN()) override;
+    double predictDelta(double horizonSeconds) const override;
     std::string debugState() const override;
 
     struct FitState {
@@ -110,23 +140,47 @@ public:
         double omega = 0.0;
         double phase = 0.0;
         double offset = 0.0;
+        double timeOrigin = 0.0;
+        std::size_t inliers = 0;
+        double rmse = std::numeric_limits<double>::infinity();
     };
 
-private:
-    static double targetValue(double x, const FitState& fitState);
-    FitState fitSinusoid(const std::vector<double>& y) const;
+    [[nodiscard]] const std::optional<FitState>& fitState() const { return fitState_; }
+    [[nodiscard]] std::size_t sampleCount() const { return speedSamples_.size(); }
 
-    int frameInterval_ = 0;
+private:
+    struct SpeedSample {
+        double timestamp = 0.0;
+        double velocity = 0.0;
+    };
+
+    static double velocityAt(double timestamp, const FitState& fitState);
+    static double integrateVelocity(double startTimestamp,
+                                    double horizonSeconds,
+                                    const FitState& fitState);
+    bool fitSinusoid();
+    bool solveLinearModel(const std::vector<const SpeedSample*>& samples,
+                          double omega,
+                          double timeOrigin,
+                          double& sinCoefficient,
+                          double& cosCoefficient,
+                          double& offset) const;
+    void resetFit();
+    double normalizeTimestamp(double timestampSeconds);
+    [[nodiscard]] bool modelReady() const;
+
+    double defaultPredictionHorizon_ = 0.0;
     int freq_ = 50;
-    FitStartDetect startFit_;
-    MovAvg smooth_;
-    CircularQueue slidWindow_;
+    BigPredictorConfig config_;
+    std::deque<SpeedSample> speedSamples_;
     std::optional<FitState> fitState_;
-    bool isStart_ = false;
-    int fitUpdateCounter_ = 0;
-    std::vector<double> y_;
-    std::vector<double> diffY_;
-    int x_ = 0;
+    bool hasPreviousObservation_ = false;
+    double previousAngle_ = 0.0;
+    double previousTimestamp_ = 0.0;
+    double currentTimestamp_ = 0.0;
+    double currentAngularVelocity_ = 0.0;
+    double syntheticTimestamp_ = 0.0;
+    std::size_t acceptedSamplesSinceFit_ = 0;
 };
 
 class AngleObserver {
@@ -145,6 +199,9 @@ private:
     ClockMode clockMode_;
 };
 
-std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode, double deltaT, int freq);
+std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode,
+                                                    double deltaT,
+                                                    int freq,
+                                                    const BigPredictorConfig& bigConfig = {});
 
 }
