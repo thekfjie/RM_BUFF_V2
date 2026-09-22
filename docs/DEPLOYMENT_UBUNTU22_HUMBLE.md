@@ -11,7 +11,7 @@
 | 上位机 | Linux 电脑、稳定电源、相机接口 | 新配机器可先按 4 核以上、8 GB 内存、预留 20 GB 磁盘规划；这是开发余量建议，不是已测最低配置 |
 | 系统 | Ubuntu 22.04 + UTF-8 locale | 若已有整车系统，优先和队伍 ROS 版本一致；不要直接在其他系统执行本文安装命令 |
 | 编译 | GCC/G++ 支持 C++17、CMake ≥3.18、Git、colcon、rosdep | Jammy 默认工具链满足代码语言要求；接口生成也需要 C 编译器 |
-| ROS | Humble、rclcpp、ament、消息生成、tf2 | package.xml 声明 ROS 依赖，rosdep 负责安装 |
+| ROS | Humble、rclcpp、ament、消息生成、tf2、serial_driver | package.xml 声明 ROS 依赖，rosdep 负责安装；大小符串口桥使用 serial_driver |
 | 图像库 | OpenCV 开发包 | core/imgproc/highgui/videoio/dnn/calib3d；系统包 libopencv-dev |
 | 推理 | ONNX Runtime **C/C++ CPU SDK** | 文中固定 1.24.4，对齐本地 SDK；Linux 兼容性仍需按后文检查。pip 包不能代替头文件和链接库 |
 | 模型 | models/best.onnx | 已随 Git 仓库保存，不用重新训练或导出 |
@@ -126,7 +126,7 @@ sha256sum src/rm_buff_tracker/models/best.onnx
 ctest --test-dir build/rm_buff_tracker --output-on-failure
 ```
 
-预期能找到 `buff_node`、`buff_detector_node`、`buff_tracker_node`；消息里应有 `camera_aim_position` / `prediction_horizon`。模型 SHA-256 为：
+预期能找到 `buff_node`、`buff_detector_node`、`buff_tracker_node`、`buff_serial_bridge`；后者缺失应核对构建日志是否显示 `serial_driver not found` 和 rosdep 安装结果。消息里应有 `camera_aim_position` / `prediction_horizon`。模型 SHA-256 为：
 
 ```text
 2eb7bc53384650ef3be242ad6bb0f768e60b543f31c2d77ed94d9bd6b02bc7dc
@@ -269,7 +269,7 @@ ros2 run rqt_image_view rqt_image_view
 
 ## 9. 与电控的边界
 
-本仓库部署完成后只意味着视觉节点和消息输出可用。队伍已决定先完成视觉模块和接口文档，最终预测/弹道归属及串口协议仍未约定，所以本文不启动串口、云台或发射机构。后续对接以 [VISUAL_INTERFACE.md](VISUAL_INTERFACE.md) 的坐标、时间和失效约定为准。
+已增加对 [步兵固件的大小符串口接口](BUFF_INFANTRY_SERIAL.md)；本仓库部署完成只代表视觉与桥的源码齐备，不代表已烧录或验证云台。桥默认 `enable_output: false`，但启动时仍独占串口并发布反馈 TF；切换装甲板/大小符必须停止旧串口节点。正式开输出前需要两边同步版本、真实相机标定/云台外参、PnP 实测物理点、实测延迟及弹速，并在无弹丸状态下验证方向与超时。大小符弹道、发射许可和命中效果尚未验证，不因串口联通而自动成立。
 
 ## 参考
 

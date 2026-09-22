@@ -1,0 +1,457 @@
+From 2f21374af8a928da6a562f49621cae6ac023b7fb Mon Sep 17 00:00:00 2001
+From: Kfjie <thekfjie@qq.com>
+Date: Tue, 22 Sep 2026 22:26:00 +0800
+Subject: [PATCH] Add guarded BUFF aim command to infantry controller
+
+---
+ ShaoBing1/application/aimbot_task.c | 111 +++++++++++++++++-----------
+ ShaoBing1/application/aimbot_task.h |  13 ++++
+ ShaoBing1/application/gimbal_task.c |  10 ++-
+ application/aimbot_task.c           | 111 +++++++++++++++++-----------
+ application/aimbot_task.h           |  13 ++++
+ application/gimbal_task.c           |  10 ++-
+ 6 files changed, 176 insertions(+), 92 deletions(-)
+
+diff --git a/ShaoBing1/application/aimbot_task.c b/ShaoBing1/application/aimbot_task.c
+index 9501725..77a2941 100644
+--- a/ShaoBing1/application/aimbot_task.c
++++ b/ShaoBing1/application/aimbot_task.c
+@@ -53,6 +53,9 @@ uint8_t aimbot_rx_buffer[48];	//
+ //串口接收
+ static uint8_t RxCounter;
+ static uint8_t rxd_state = 0;
++static volatile uint8_t rx_mode = 0;
++static volatile uint32_t last_packet_ms = 0;
++typedef char check_buff_wire_size[(sizeof(Buff_Rx_Data_t) == 48) ? 1 : -1];
+ uint8_t aimbot_data;
+ 
+ uint8_t x0x0;
+@@ -135,7 +138,8 @@ void aimbot_task(void const *pvParameters)
+ 	aimbot_init(&aimbot);
+ 	while(1)
+ 	{
+-		aimbot_flight_time_count(&aimbot.aimbot_count);
++		if (rx_mode != 0xA6)
++			aimbot_flight_time_count(&aimbot.aimbot_count);
+ 		aimbot_feedback_update(&aimbot);
+ 		aimbot_control_loop(&aimbot);
+ 		
+@@ -181,11 +185,12 @@ void aimbot_init(aimbot_task_t *aimbot_task_init)
+ void aimbot_feedback_update(aimbot_task_t *aimbot_feedback)
+ {
+ 	aimbot_feedback->Vision_Tx_Data.detect_color = Get_ID();
+-	if(aimbot_feedback->Vision_Rx_Data.x != aimbot_feedback->last_x)
++	if ((uint32_t)(HAL_GetTick() - last_packet_ms) < 160 &&
++	    ((rx_mode == 0xA6 && aimbot_feedback->Buff_Rx_Data.valid == 1) ||
++	     (rx_mode == 0xA5 && aimbot_feedback->Vision_Rx_Data.tracking)))
+ 		aimbot_feedback->aimbot_state = AIMBOT_GET;
+ 	else
+-//		if(aimbot_feedback->aimbot_mode == AIMBOT_OFF)
+-			aimbot_feedback->aimbot_state = AIMBOT_OUT;
++		aimbot_feedback->aimbot_state = AIMBOT_OUT;
+ 	
+ 	aimbot_feedback->last_x = aimbot_feedback->Vision_Rx_Data.x;
+ 	aimbot_feedback->last_y = aimbot_feedback->Vision_Rx_Data.y;
+@@ -215,6 +220,8 @@ void aimbot_feedback_update(aimbot_task_t *aimbot_feedback)
+ 	memcpy(aimbot_tx_buffer, &aimbot.Vision_Tx_Data, sizeof(aimbot.Vision_Tx_Data));  //传入需要发送的数据
+ 	
+ //LZX
++	if (rx_mode == 0xA6)
++		return;
+ 	fp32 r_average = (aimbot_feedback->Vision_Rx_Data.r1+aimbot_feedback->Vision_Rx_Data.r2)/2.0f;
+ //	fp32 r_average = (aimbot_feedback->Vision_Rx_Data.r1+aimbot_feedback->Vision_Rx_Data.r2)/2.0f+SPIN_RADIUS_OFFSET;
+ 	fp32 spin_vel = aimbot_feedback->Vision_Rx_Data.v_yaw; // 保留角速度符号（判断旋转方向）
+@@ -343,6 +350,26 @@ void aimbot_quar_to_angle_count(aimbot_task_t *aimbot_quar_to_angle)
+ //自瞄计算
+ void aimbot_control_loop(aimbot_task_t *aimbot_control)
+ {
++	if (rx_mode == 0xA6)
++	{
++		Buff_Rx_Data_t command;
++		taskENTER_CRITICAL();
++		memcpy(&command, &aimbot_control->Buff_Rx_Data, sizeof(command));
++		taskEXIT_CRITICAL();
++		if (aimbot_control->aimbot_state == AIMBOT_GET &&
++		    (uint32_t)(HAL_GetTick() - last_packet_ms) < 160 && command.valid == 1)
++		{
++			aimbot_control->target_yaw = command.yaw;
++			aimbot_control->target_pitch = command.pitch;
++			return;
++		}
++	}
++	if (aimbot_control->aimbot_state != AIMBOT_GET)
++	{
++		aimbot_control->target_pitch = aimbot_control->aimbot_INT_angle_point[PITCH_CHANNEL];
++		aimbot_control->target_yaw = aimbot_control->aimbot_INT_angle_point[YAW_CHANNEL];
++		return;
++	}
+ 	aimbot_quar_to_angle_count(aimbot_control);
+ 
+ 	//如果没有识别到的时候不复制
+@@ -388,45 +415,43 @@ void aimbot_control_loop(aimbot_task_t *aimbot_control)
+ //串口接收中断
+ void aimbot_receive_program(void)
+ {
+-	HAL_UART_Receive_IT(&huart1, (uint8_t *)&aimbot_data, 1);//完成一次接受，再此开启中断
+-    switch(rxd_state)
+-    {
+-      case 0:
+-      {
+-        if(aimbot_data == 0xA5)   //收到
+-        {
+-            RxCounter = 0; // 重置 RxCounter 为 0
+-            rxd_state = 1;
+-            aimbot_rx_buffer[RxCounter]=aimbot_data;
+-            RxCounter++;
+-        }
+-        break;
+-      }
+-      case 1:
+-      {
+-        if(aimbot_data == 0xA5)   //如果再次收到0xA5，重新开始接收
+-        {
+-            rxd_state = 0;
+-//            memset(&aimbot.Vision_Rx_Data, 0, sizeof(aimbot.Vision_Rx_Data)); //原始数据清除
+-            break;
+-        }
+-        aimbot_rx_buffer[RxCounter]=aimbot_data;
+-        RxCounter++;
+-        if(RxCounter==sizeof(aimbot.Vision_Rx_Data))  //收满
+-            rxd_state = 2;
+-        break;
+-      }
+-      case 2:
+-      {
+-        if(verify_CRC16_check_sum((uint8_t *)&aimbot_rx_buffer, sizeof(aimbot_rx_buffer)) == true)
+-        {
+-          memcpy(&aimbot.Vision_Rx_Data, aimbot_rx_buffer, sizeof(aimbot_rx_buffer)); //传出接收到的数据
+-//		  aimbot_mode_set(0);
+-        }
+-        rxd_state = 0;
+-        break;
+-      }
+-    }
++	const uint8_t byte = aimbot_data;
++	HAL_UART_Receive_IT(&huart1, (uint8_t *)&aimbot_data, 1);
++	if (rxd_state == 0)
++	{
++		if (byte == 0xA5 || byte == 0xA6)
++		{
++			aimbot_rx_buffer[0] = byte;
++			RxCounter = 1;
++			rxd_state = 1;
++		}
++		return;
++	}
++	// Payload bytes can equal either header value. CRC validates the complete frame.
++	aimbot_rx_buffer[RxCounter++] = byte;
++	if (RxCounter != sizeof(aimbot_rx_buffer))
++		return;
++	rxd_state = 0;
++	RxCounter = 0;
++	if (!verify_CRC16_check_sum(aimbot_rx_buffer, sizeof(aimbot_rx_buffer)))
++		return;
++	if (aimbot_rx_buffer[0] == 0xA6)
++	{
++		Buff_Rx_Data_t command;
++		memcpy(&command, aimbot_rx_buffer, sizeof(command));
++		if (command.valid > 1 || !(command.yaw > -PI && command.yaw < PI) ||
++		    !(command.pitch > -PI/2 && command.pitch < PI/2) ||
++		    !(command.horizon >= 0.0f && command.horizon <= 0.8f))
++			return;
++		memcpy(&aimbot.Buff_Rx_Data, &command, sizeof(command));
++		rx_mode = 0xA6;
++	}
++	else
++	{
++		memcpy(&aimbot.Vision_Rx_Data, aimbot_rx_buffer, sizeof(aimbot.Vision_Rx_Data));
++		rx_mode = 0xA5;
++	}
++	last_packet_ms = HAL_GetTick();
+ }
+ 
+ //试运行
+diff --git a/ShaoBing1/application/aimbot_task.h b/ShaoBing1/application/aimbot_task.h
+index ab5eac2..aedc46a 100644
+--- a/ShaoBing1/application/aimbot_task.h
++++ b/ShaoBing1/application/aimbot_task.h
+@@ -65,6 +65,18 @@ typedef __packed struct
+ 	uint16_t checksum;
+ }Vision_Rx_Data_t;
+ 
++// 0xA6: already predicted BUFF aim, independent of armor extrapolation.
++typedef __packed struct
++{
++    uint8_t header;
++    uint8_t valid;
++    float yaw;
++    float pitch;
++    float horizon;
++    float reserved[8];
++    uint16_t checksum;
++} Buff_Rx_Data_t;
++
+ typedef struct
+ {
+ 	fp32 t0;
+@@ -89,6 +101,7 @@ typedef struct
+ 	uint8_t aimbot_auto_fire_state;
+ 	
+ 	Vision_Rx_Data_t Vision_Rx_Data;
++	Buff_Rx_Data_t Buff_Rx_Data;
+ 	Vision_Tx_Data_t Vision_Tx_Data;
+ 	
+ 	aimbot_count_t	aimbot_count;		//算出来的飞行时间
+diff --git a/ShaoBing1/application/gimbal_task.c b/ShaoBing1/application/gimbal_task.c
+index 0d85b07..9f584a4 100644
+--- a/ShaoBing1/application/gimbal_task.c
++++ b/ShaoBing1/application/gimbal_task.c
+@@ -727,6 +727,7 @@ void gimbal_ins_yaw_control(gimbal_control_t *gimbal_ins)
+ static uint16_t gimbal_aimbot_delay;
+ void aimbot_gimbal_control(gimbal_control_t *aimbot_gimbal_control_point)
+ {
++	fp32 yaw_error;
+ 	if(aimbot_gimbal_control_point->aimbot_mode == AIMBOT_ON)
+ 	{
+ 		gimbal_aimbot_delay++;
+@@ -743,11 +744,14 @@ void aimbot_gimbal_control(gimbal_control_t *aimbot_gimbal_control_point)
+ 			aimbot_gimbal_control_point->gimbal_pitch_motor.current_set = PID_calc(&aimbot_gimbal_control_point->aimbot_speed_pitch_pid, aimbot_gimbal_control_point->gimbal_pitch_motor.motor_gyro, 
+ 																			aimbot_gimbal_control_point->gimbal_pitch_motor.motor_gyro_set);
+ 			//yaw
+-			if(fabs(aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw-aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL])<PI/8.0f)
+-				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw;
++			yaw_error = loop_fp32_constrain(
++				aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw -
++				aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL], -PI, PI);
++			if(fabs(yaw_error)<PI/8.0f)
++				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set =
++					aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL] + yaw_error;
+ 			else
+ 				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL];
+-			aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = loop_fp32_constrain(aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set, -PI, PI);
+ 				
+ 			//PID——yaw
+ 			aimbot_gimbal_control_point->gimbal_yaw_motor.motor_gyro_set = gimbal_PID_calc(&aimbot_gimbal_control_point->aimbot_angle_yaw_pid , aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL] - aimbot_gimbal_control_point->gimbal_yaw_motor.gimbal_motor_measure->speed_rpm*GIMBAL_SPIN_YAW_BUFFER, 
+diff --git a/application/aimbot_task.c b/application/aimbot_task.c
+index 9501725..77a2941 100644
+--- a/application/aimbot_task.c
++++ b/application/aimbot_task.c
+@@ -53,6 +53,9 @@ uint8_t aimbot_rx_buffer[48];	//
+ //串口接收
+ static uint8_t RxCounter;
+ static uint8_t rxd_state = 0;
++static volatile uint8_t rx_mode = 0;
++static volatile uint32_t last_packet_ms = 0;
++typedef char check_buff_wire_size[(sizeof(Buff_Rx_Data_t) == 48) ? 1 : -1];
+ uint8_t aimbot_data;
+ 
+ uint8_t x0x0;
+@@ -135,7 +138,8 @@ void aimbot_task(void const *pvParameters)
+ 	aimbot_init(&aimbot);
+ 	while(1)
+ 	{
+-		aimbot_flight_time_count(&aimbot.aimbot_count);
++		if (rx_mode != 0xA6)
++			aimbot_flight_time_count(&aimbot.aimbot_count);
+ 		aimbot_feedback_update(&aimbot);
+ 		aimbot_control_loop(&aimbot);
+ 		
+@@ -181,11 +185,12 @@ void aimbot_init(aimbot_task_t *aimbot_task_init)
+ void aimbot_feedback_update(aimbot_task_t *aimbot_feedback)
+ {
+ 	aimbot_feedback->Vision_Tx_Data.detect_color = Get_ID();
+-	if(aimbot_feedback->Vision_Rx_Data.x != aimbot_feedback->last_x)
++	if ((uint32_t)(HAL_GetTick() - last_packet_ms) < 160 &&
++	    ((rx_mode == 0xA6 && aimbot_feedback->Buff_Rx_Data.valid == 1) ||
++	     (rx_mode == 0xA5 && aimbot_feedback->Vision_Rx_Data.tracking)))
+ 		aimbot_feedback->aimbot_state = AIMBOT_GET;
+ 	else
+-//		if(aimbot_feedback->aimbot_mode == AIMBOT_OFF)
+-			aimbot_feedback->aimbot_state = AIMBOT_OUT;
++		aimbot_feedback->aimbot_state = AIMBOT_OUT;
+ 	
+ 	aimbot_feedback->last_x = aimbot_feedback->Vision_Rx_Data.x;
+ 	aimbot_feedback->last_y = aimbot_feedback->Vision_Rx_Data.y;
+@@ -215,6 +220,8 @@ void aimbot_feedback_update(aimbot_task_t *aimbot_feedback)
+ 	memcpy(aimbot_tx_buffer, &aimbot.Vision_Tx_Data, sizeof(aimbot.Vision_Tx_Data));  //传入需要发送的数据
+ 	
+ //LZX
++	if (rx_mode == 0xA6)
++		return;
+ 	fp32 r_average = (aimbot_feedback->Vision_Rx_Data.r1+aimbot_feedback->Vision_Rx_Data.r2)/2.0f;
+ //	fp32 r_average = (aimbot_feedback->Vision_Rx_Data.r1+aimbot_feedback->Vision_Rx_Data.r2)/2.0f+SPIN_RADIUS_OFFSET;
+ 	fp32 spin_vel = aimbot_feedback->Vision_Rx_Data.v_yaw; // 保留角速度符号（判断旋转方向）
+@@ -343,6 +350,26 @@ void aimbot_quar_to_angle_count(aimbot_task_t *aimbot_quar_to_angle)
+ //自瞄计算
+ void aimbot_control_loop(aimbot_task_t *aimbot_control)
+ {
++	if (rx_mode == 0xA6)
++	{
++		Buff_Rx_Data_t command;
++		taskENTER_CRITICAL();
++		memcpy(&command, &aimbot_control->Buff_Rx_Data, sizeof(command));
++		taskEXIT_CRITICAL();
++		if (aimbot_control->aimbot_state == AIMBOT_GET &&
++		    (uint32_t)(HAL_GetTick() - last_packet_ms) < 160 && command.valid == 1)
++		{
++			aimbot_control->target_yaw = command.yaw;
++			aimbot_control->target_pitch = command.pitch;
++			return;
++		}
++	}
++	if (aimbot_control->aimbot_state != AIMBOT_GET)
++	{
++		aimbot_control->target_pitch = aimbot_control->aimbot_INT_angle_point[PITCH_CHANNEL];
++		aimbot_control->target_yaw = aimbot_control->aimbot_INT_angle_point[YAW_CHANNEL];
++		return;
++	}
+ 	aimbot_quar_to_angle_count(aimbot_control);
+ 
+ 	//如果没有识别到的时候不复制
+@@ -388,45 +415,43 @@ void aimbot_control_loop(aimbot_task_t *aimbot_control)
+ //串口接收中断
+ void aimbot_receive_program(void)
+ {
+-	HAL_UART_Receive_IT(&huart1, (uint8_t *)&aimbot_data, 1);//完成一次接受，再此开启中断
+-    switch(rxd_state)
+-    {
+-      case 0:
+-      {
+-        if(aimbot_data == 0xA5)   //收到
+-        {
+-            RxCounter = 0; // 重置 RxCounter 为 0
+-            rxd_state = 1;
+-            aimbot_rx_buffer[RxCounter]=aimbot_data;
+-            RxCounter++;
+-        }
+-        break;
+-      }
+-      case 1:
+-      {
+-        if(aimbot_data == 0xA5)   //如果再次收到0xA5，重新开始接收
+-        {
+-            rxd_state = 0;
+-//            memset(&aimbot.Vision_Rx_Data, 0, sizeof(aimbot.Vision_Rx_Data)); //原始数据清除
+-            break;
+-        }
+-        aimbot_rx_buffer[RxCounter]=aimbot_data;
+-        RxCounter++;
+-        if(RxCounter==sizeof(aimbot.Vision_Rx_Data))  //收满
+-            rxd_state = 2;
+-        break;
+-      }
+-      case 2:
+-      {
+-        if(verify_CRC16_check_sum((uint8_t *)&aimbot_rx_buffer, sizeof(aimbot_rx_buffer)) == true)
+-        {
+-          memcpy(&aimbot.Vision_Rx_Data, aimbot_rx_buffer, sizeof(aimbot_rx_buffer)); //传出接收到的数据
+-//		  aimbot_mode_set(0);
+-        }
+-        rxd_state = 0;
+-        break;
+-      }
+-    }
++	const uint8_t byte = aimbot_data;
++	HAL_UART_Receive_IT(&huart1, (uint8_t *)&aimbot_data, 1);
++	if (rxd_state == 0)
++	{
++		if (byte == 0xA5 || byte == 0xA6)
++		{
++			aimbot_rx_buffer[0] = byte;
++			RxCounter = 1;
++			rxd_state = 1;
++		}
++		return;
++	}
++	// Payload bytes can equal either header value. CRC validates the complete frame.
++	aimbot_rx_buffer[RxCounter++] = byte;
++	if (RxCounter != sizeof(aimbot_rx_buffer))
++		return;
++	rxd_state = 0;
++	RxCounter = 0;
++	if (!verify_CRC16_check_sum(aimbot_rx_buffer, sizeof(aimbot_rx_buffer)))
++		return;
++	if (aimbot_rx_buffer[0] == 0xA6)
++	{
++		Buff_Rx_Data_t command;
++		memcpy(&command, aimbot_rx_buffer, sizeof(command));
++		if (command.valid > 1 || !(command.yaw > -PI && command.yaw < PI) ||
++		    !(command.pitch > -PI/2 && command.pitch < PI/2) ||
++		    !(command.horizon >= 0.0f && command.horizon <= 0.8f))
++			return;
++		memcpy(&aimbot.Buff_Rx_Data, &command, sizeof(command));
++		rx_mode = 0xA6;
++	}
++	else
++	{
++		memcpy(&aimbot.Vision_Rx_Data, aimbot_rx_buffer, sizeof(aimbot.Vision_Rx_Data));
++		rx_mode = 0xA5;
++	}
++	last_packet_ms = HAL_GetTick();
+ }
+ 
+ //试运行
+diff --git a/application/aimbot_task.h b/application/aimbot_task.h
+index ab5eac2..aedc46a 100644
+--- a/application/aimbot_task.h
++++ b/application/aimbot_task.h
+@@ -65,6 +65,18 @@ typedef __packed struct
+ 	uint16_t checksum;
+ }Vision_Rx_Data_t;
+ 
++// 0xA6: already predicted BUFF aim, independent of armor extrapolation.
++typedef __packed struct
++{
++    uint8_t header;
++    uint8_t valid;
++    float yaw;
++    float pitch;
++    float horizon;
++    float reserved[8];
++    uint16_t checksum;
++} Buff_Rx_Data_t;
++
+ typedef struct
+ {
+ 	fp32 t0;
+@@ -89,6 +101,7 @@ typedef struct
+ 	uint8_t aimbot_auto_fire_state;
+ 	
+ 	Vision_Rx_Data_t Vision_Rx_Data;
++	Buff_Rx_Data_t Buff_Rx_Data;
+ 	Vision_Tx_Data_t Vision_Tx_Data;
+ 	
+ 	aimbot_count_t	aimbot_count;		//算出来的飞行时间
+diff --git a/application/gimbal_task.c b/application/gimbal_task.c
+index a78d662..d795f6f 100644
+--- a/application/gimbal_task.c
++++ b/application/gimbal_task.c
+@@ -727,6 +727,7 @@ void gimbal_ins_yaw_control(gimbal_control_t *gimbal_ins)
+ static uint16_t gimbal_aimbot_delay;
+ void aimbot_gimbal_control(gimbal_control_t *aimbot_gimbal_control_point)
+ {
++	fp32 yaw_error;
+ 	if(aimbot_gimbal_control_point->aimbot_mode == AIMBOT_ON)
+ 	{
+ 		gimbal_aimbot_delay++;
+@@ -743,11 +744,14 @@ void aimbot_gimbal_control(gimbal_control_t *aimbot_gimbal_control_point)
+ 			aimbot_gimbal_control_point->gimbal_pitch_motor.current_set = PID_calc(&aimbot_gimbal_control_point->aimbot_speed_pitch_pid, aimbot_gimbal_control_point->gimbal_pitch_motor.motor_gyro, 
+ 																			aimbot_gimbal_control_point->gimbal_pitch_motor.motor_gyro_set);
+ 			//yaw
+-			if(fabs(aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw-aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL])<PI/8.0f)
+-				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw;
++			yaw_error = loop_fp32_constrain(
++				aimbot_gimbal_control_point->gimbal_aimbot_point->target_yaw -
++				aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL], -PI, PI);
++			if(fabs(yaw_error)<PI/8.0f)
++				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set =
++					aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL] + yaw_error;
+ 			else
+ 				aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL];
+-			aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set = loop_fp32_constrain(aimbot_gimbal_control_point->gimbal_yaw_motor.absolute_angle_set, -PI, PI);
+ 				
+ 			//PID——yaw
+ 			aimbot_gimbal_control_point->gimbal_yaw_motor.motor_gyro_set = gimbal_PID_calc(&aimbot_gimbal_control_point->aimbot_angle_yaw_pid , aimbot_gimbal_control_point->gimbal_INT_angle_point[YAW_CHANNEL] - aimbot_gimbal_control_point->gimbal_yaw_motor.gimbal_motor_measure->speed_rpm*GIMBAL_SPIN_YAW_BUFFER, 
+-- 
+2.50.1.windows.1
+

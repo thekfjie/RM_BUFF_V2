@@ -1,0 +1,10 @@
+buff_serial_bridge:
+  ros__parameters:
+    device_name: /dev/ttyACM0
+    baud_rate: 115200
+    target_topic: /buff/tracker/target
+    enable_output: false
+    require_pnp: true
+    max_target_age: 0.12
+    max_feedback_age: 0.12
+    max_prediction_horizon: 0.8
