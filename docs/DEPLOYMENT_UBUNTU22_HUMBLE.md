@@ -11,7 +11,7 @@
 | 上位机 | Linux 电脑、稳定电源、相机接口 | 新配机器可先按 4 核以上、8 GB 内存、预留 20 GB 磁盘规划；这是开发余量建议，不是已测最低配置 |
 | 系统 | Ubuntu 22.04 + UTF-8 locale | 若已有整车系统，优先和队伍 ROS 版本一致；不要直接在其他系统执行本文安装命令 |
 | 编译 | GCC/G++ 支持 C++17、CMake ≥3.18、Git、colcon、rosdep | Jammy 默认工具链满足代码语言要求；接口生成也需要 C 编译器 |
-| ROS | Humble、rclcpp、ament、消息生成、tf2、serial_driver | package.xml 声明 ROS 依赖，rosdep 负责安装；大小符串口桥使用 serial_driver |
+| ROS | Humble、rclcpp、ament、消息生成、tf2、serial_driver、auto_aim_interfaces | 后者是队伍装甲板源码中的 ROS 接口包；统一串口桥同时接装甲板和大小符 |
 | 图像库 | OpenCV 开发包 | core/imgproc/highgui/videoio/dnn/calib3d；系统包 libopencv-dev |
 | 推理 | ONNX Runtime **C/C++ CPU SDK** | 文中固定 1.24.4，对齐本地 SDK；Linux 兼容性仍需按后文检查。pip 包不能代替头文件和链接库 |
 | 模型 | models/best.onnx | 已随 Git 仓库保存，不用重新训练或导出 |
@@ -89,7 +89,7 @@ ldd "$ONNXRUNTIME_DIR/lib/libonnxruntime.so"
 
 ## 4. 获取项目并构建
 
-首次部署建议单独使用 `~/rm_buff_ws`，确认后再集成到队伍 `~/rm_ws`，避免与旧同名包混淆。同一工作空间里只能有一份 rm_buff_tracker。
+首次部署建议单独使用 `~/rm_buff_ws`，确认后再集成到队伍 `~/rm_ws`，避免与旧同名包混淆。同一工作空间里只能有一份 rm_buff_tracker。本版本还需将队伍使用的 `auto_aim_interfaces` 源包放在同一工作空间 `src/auto_aim_interfaces`（或先 source 已构建该包的 overlay）；该包不随视觉仓库提供，缺少它时双模式串口桥不会构建。
 
 ```bash
 mkdir -p "$HOME/rm_buff_ws/src"
@@ -98,14 +98,14 @@ git clone --branch main https://github.com/thekfjie/RM_BUFF_V2.git rm_buff_track
 cd "$HOME/rm_buff_ws"
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src --rosdistro humble -r -y
-colcon build --packages-select rm_buff_tracker \
+colcon build --packages-up-to rm_buff_tracker \
   --event-handlers console_direct+ \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DONNXRUNTIME_DIR="$ONNXRUNTIME_DIR"
 source install/setup.bash
 ```
 
-如果仓库已存在，先保存本地修改再 `git pull --ff-only`，不要再次 clone 到同一路径。若以前用不同工具链/SDK 构建过，用新的 workspace 或 build/install 目录重新构建；不要复制 Windows 的 build/install。
+`--packages-up-to` 会先生成装甲板消息再编译双模式桥；若接口包放在已构建的 overlay，须先 source 该 overlay。若仓库已存在，先保存本地修改再 `git pull --ff-only`，不要再次 clone 到同一路径。若以前用不同工具链/SDK 构建过，用新的 workspace 或 build/install 目录重新构建；不要复制 Windows 的 build/install。
 
 编译日志应出现：
 
@@ -126,7 +126,7 @@ sha256sum src/rm_buff_tracker/models/best.onnx
 ctest --test-dir build/rm_buff_tracker --output-on-failure
 ```
 
-预期能找到 `buff_node`、`buff_detector_node`、`buff_tracker_node`、`buff_serial_bridge`；后者缺失应核对构建日志是否显示 `serial_driver not found` 和 rosdep 安装结果。消息里应有 `camera_aim_position` / `prediction_horizon`。模型 SHA-256 为：
+预期能找到 `buff_node`、`buff_detector_node`、`buff_tracker_node`、`buff_serial_bridge`。若桥缺失，应核对构建日志中的 `BUFF serial bridge dependencies missing`，并在构建前提供 `auto_aim_interfaces`、`serial_driver`、`std_srvs`、`visualization_msgs`。消息里应有 `camera_aim_position` / `prediction_horizon`。模型 SHA-256 为：
 
 ```text
 2eb7bc53384650ef3be242ad6bb0f768e60b543f31c2d77ed94d9bd6b02bc7dc
@@ -269,7 +269,7 @@ ros2 run rqt_image_view rqt_image_view
 
 ## 9. 与电控的边界
 
-已增加对 [步兵固件的大小符串口接口](BUFF_INFANTRY_SERIAL.md)；本仓库部署完成只代表视觉与桥的源码齐备，不代表已烧录或验证云台。桥默认 `enable_output: false`，但启动时仍独占串口并发布反馈 TF；切换装甲板/大小符必须停止旧串口节点。正式开输出前需要两边同步版本、真实相机标定/云台外参、PnP 实测物理点、实测延迟及弹速，并在无弹丸状态下验证方向与超时。大小符弹道、发射许可和命中效果尚未验证，不因串口联通而自动成立。
+已增加对 [步兵固件的双模式串口接口](BUFF_INFANTRY_SERIAL.md)；本仓库部署完成只代表视觉与桥的源码齐备，不代表已烧录或验证云台。桥默认 `enable_output: false`，但启动时仍独占串口并发布反馈 TF；部署时由它替换原 `rm_serial_driver` 一次，之后通过 `active_mode=armor|buff` 在线切换，不必再关闭串口。正式开输出前需要两边同步版本、真实相机标定/云台外参、PnP 实测物理点、实测延迟及弹速，并在无弹丸状态下验证方向与超时。大小符弹道、发射许可和命中效果尚未验证，不因串口联通而自动成立。
 
 ## 参考
 

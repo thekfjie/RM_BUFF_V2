@@ -12,13 +12,13 @@ ROS2 包名为 `rm_buff_tracker`，放在上位机工作空间 `~/rm_ws/src/rm_b
   -> BuffObservation
   -> buff_tracker_node：坐标转换、观测速度、超时状态
   -> BuffTargetState
-  -> buff_serial_bridge（独占串口，默认禁用控制输出）
-  -> 步兵下位机 0xA6 大小符角度接口
+  -> buff_serial_bridge（装甲板/大小符两种输入，一个串口拥有者，默认禁用控制输出）
+  -> 步兵下位机 0xA5 装甲板 / 0xA6 大小符接口
 ```
 
 视觉负责识别、目标关联、相位/转速与有效性。系统集成负责相机/TF/时钟、模式仲裁和协议。电控负责反馈、执行和通信超时。预测与弹道计算的归属待双方确认：每个环节只执行一次。
 
-已有 `rm_serial_driver` 订阅的是装甲板 `auto_aim_interfaces/Target`。不能把大小符消息 remap 过去，也不能把像素、扇叶相位或已经预测的点冒充装甲板旋转状态；大小符使用独立串口桥，切模式必须先释放旧节点独占的串口。
+已有 `rm_serial_driver` 订阅的是装甲板 `auto_aim_interfaces/Target`。不能把大小符消息 remap 过去，也不能把像素、扇叶相位或已经预测的点冒充装甲板旋转状态；统一串口桥分别订阅两个话题，以 `active_mode=armor|buff` 运行时选择一条路径。部署统一桥时只需停止旧驱动一次，之后切模式不必释放串口。
 
 ## 入口选择
 

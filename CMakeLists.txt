@@ -153,10 +153,13 @@ find_package(rclcpp QUIET)
 find_package(sensor_msgs QUIET)
 find_package(std_msgs QUIET)
 find_package(geometry_msgs QUIET)
+find_package(visualization_msgs QUIET)
+find_package(std_srvs QUIET)
 find_package(tf2 QUIET)
 find_package(tf2_ros QUIET)
 find_package(tf2_geometry_msgs QUIET)
 find_package(serial_driver QUIET)
+find_package(auto_aim_interfaces QUIET)
 find_package(rosidl_default_generators QUIET)
 
 if(ament_cmake_FOUND AND ament_index_cpp_FOUND AND rclcpp_FOUND AND sensor_msgs_FOUND AND
@@ -211,14 +214,15 @@ if(ament_cmake_FOUND AND ament_index_cpp_FOUND AND rclcpp_FOUND AND sensor_msgs_
 
         list(APPEND RM_BUFF_ROS_TARGETS buff_detector_node buff_tracker_node)
 
-        if(serial_driver_FOUND)
+        if(serial_driver_FOUND AND auto_aim_interfaces_FOUND AND visualization_msgs_FOUND AND std_srvs_FOUND)
             add_executable(buff_serial_bridge src/ros2/buff_serial_bridge.cpp)
             target_link_libraries(buff_serial_bridge "${cpp_typesupport_target}")
             ament_target_dependencies(buff_serial_bridge
-                rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs serial_driver)
+                rclcpp std_msgs geometry_msgs visualization_msgs tf2 tf2_ros
+                tf2_geometry_msgs serial_driver auto_aim_interfaces std_srvs)
             list(APPEND RM_BUFF_ROS_TARGETS buff_serial_bridge)
         else()
-            message(STATUS "serial_driver not found, skipping BUFF serial bridge")
+            message(STATUS "BUFF serial bridge dependencies missing (serial_driver, auto_aim_interfaces, visualization_msgs, std_srvs)")
         endif()
     else()
         message(STATUS "tf2 not found, skipping independent BUFF spatial channel")
