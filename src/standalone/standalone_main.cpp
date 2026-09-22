@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
 
         PipelineConfig pipeConfig;
         pipeConfig.moveMode = options.moveMode;
-        pipeConfig.clockMode = ParseClockMode(options.color);
+        pipeConfig.clockMode = ClockMode::Automatic;
         pipeConfig.deltaT = options.deltaT;
         pipeConfig.freq = options.freq;
         pipeConfig.enableCompensation = parameter.enableCompensation;
@@ -137,6 +137,11 @@ int main(int argc, char** argv) {
         auto buildPipelineFromSeed = [&](const cv::Mat& currentFrame,
                                          const DetectionResult& seed,
                                          const std::string& reason) {
+            if (pipeline) {
+                const bool locked = pipeline->reseed(currentFrame, parameter, BBoxToRect(seed.rBox), BBoxToRect(seed.fanBladeBox));
+                if (locked) lostFrames = 0;
+                return locked;
+            }
             auto hsvDet = std::make_unique<HsvDetector>(options.isImshow);
             auto newPipeline = std::make_unique<BuffPipeline>(std::move(hsvDet), pipeConfig);
             if (!newPipeline->initialize(currentFrame, parameter, BBoxToRect(seed.rBox), BBoxToRect(seed.fanBladeBox))) {

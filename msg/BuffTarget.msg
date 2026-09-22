@@ -15,3 +15,5 @@ float64 raw_angle
 float64 delta_angle
 float64 compensated_delta
 float64 angular_velocity
+float64 prediction_horizon
+float64 phase_correction

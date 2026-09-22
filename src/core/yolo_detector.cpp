@@ -1,9 +1,11 @@
 #include "yolo_detector.hpp"
+#include "target_class.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 
 #include <opencv2/imgproc.hpp>
 
@@ -181,6 +183,9 @@ DetectionResult YoloDetector::detect(cv::Mat& frame) {
             return lastYoloResult_;
         }
         std::cerr << "[YoloDetector] Periodic reseed failed" << std::endl;
+        // An activation/colour check failed. Do not keep reporting the old
+        // target as present merely because an HSV contour still exists.
+        return result;
     }
 
     const bool ok = tracker_->update(frame, true);
@@ -349,48 +354,32 @@ std::vector<YoloDetector::YoloPoseBox> YoloDetector::runInference(const cv::Mat&
 std::optional<DetectionResult> YoloDetector::selectBestTarget(const std::vector<YoloPoseBox>& boxes,
                                                               const cv::Size& frameSize,
                                                               std::optional<int> preferredClassId) const {
-    const YoloPoseBox* bestPreferred = nullptr;
-    const YoloPoseBox* bestSameColorFallback = nullptr;
-    const YoloPoseBox* bestAny = nullptr;
-
-    auto sameColorFallbackClass = [](int classId) -> int {
-        switch (classId) {
-            case 0: return 1;
-            case 1: return 0;
-            case 2: return 3;
-            case 3: return 2;
-            default: return -1;
-        }
-    };
-    const int fallbackClassId = preferredClassId.has_value()
-        ? sameColorFallbackClass(preferredClassId.value())
-        : -1;
-
+    const YoloPoseBox* bestTarget = nullptr;
+    double bestDistance = std::numeric_limits<double>::infinity();
+    const cv::Point2f imageCenter(frameSize.width * 0.5f, frameSize.height * 0.5f);
     for (const auto& box : boxes) {
-        if (box.classId < 0 || box.classId > 3) {
+        if (!IsUnhitTargetClass(box.classId) || !box.keypoints.valid ||
+            (preferredClassId.has_value() && box.classId != preferredClassId.value())) {
             continue;
         }
-
-        if (!bestAny || box.confidence > bestAny->confidence) {
-            bestAny = &box;
+        cv::Point2f center(0.0f, 0.0f);
+        bool finite = true;
+        for (const auto& point : box.keypoints.points) {
+            finite = finite && std::isfinite(point.x) && std::isfinite(point.y);
         }
-
-        if (preferredClassId.has_value() && box.classId == preferredClassId.value()) {
-            if (!bestPreferred || box.confidence > bestPreferred->confidence) {
-                bestPreferred = &box;
-            }
-        }
-
-        if (fallbackClassId >= 0 && box.classId == fallbackClassId) {
-            if (!bestSameColorFallback || box.confidence > bestSameColorFallback->confidence) {
-                bestSameColorFallback = &box;
-            }
+        if (!finite) continue;
+        for (const int index : kBladeKeypointIndices) center += box.keypoints.points[index];
+        center *= 0.25f;
+        // Pixel-centre proxy until calibrated optical-axis selection is available.
+        // Keep a nearby previous target to avoid confidence-driven blade switching.
+        const cv::Point2f reference = tracker_ ? tracker_->fanBladeBox().center2f() : imageCenter;
+        const double distance = cv::norm(center - reference);
+        if (!bestTarget || distance < bestDistance ||
+            (distance == bestDistance && box.confidence > bestTarget->confidence)) {
+            bestTarget = &box;
+            bestDistance = distance;
         }
     }
-
-    const YoloPoseBox* bestTarget = preferredClassId.has_value()
-        ? (bestPreferred ? bestPreferred : bestSameColorFallback)
-        : bestAny;
     if (!bestTarget) {
         if (showDebug_) {
             std::cout << "[YoloDetector] No target blade found in " << boxes.size() << " detections" << std::endl;

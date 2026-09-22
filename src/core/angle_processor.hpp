@@ -17,6 +17,7 @@ enum class MoveMode {
 };
 
 enum class ClockMode {
+    Automatic,
     Anticlockwise,
     Clockwise,
 };
@@ -26,6 +27,7 @@ struct PredictionResult {
     double deltaAngle = 0.0;
     double angularVelocity = 0.0;
     bool modelReady = false;
+    double phaseCorrection = 0.0; // filtered phase minus the input phase
 };
 
 struct BigPredictorConfig {
@@ -42,6 +44,9 @@ struct BigPredictorConfig {
     double maxAbsSpeed = 2.090;
     double maxObservationGap = 0.50;
     double maxPhaseJump = 0.80;
+    double minSampleSpan = 1.5;
+    double maxModelAge = 0.25;
+    int maxConsecutiveRejected = 8;
 };
 
 double EuclideanDistance(const cv::Point2f& p1, const cv::Point2f& p2);
@@ -122,8 +127,14 @@ private:
     double defaultPredictionHorizon_ = 0.0;
     int warmupFrames_ = 0;
     int frameCount_ = 0;
-    double firstAngle_ = 0.0;
     double direction_ = 0.0;
+    int freq_ = 50;
+    int directionEvidence_ = 0;
+    bool hasPrevious_ = false;
+    double previousTimestamp_ = 0.0;
+    double previousAngle_ = 0.0;
+    double filteredPhase_ = 0.0;
+    double phaseVariance_ = 0.0004;
 };
 
 class BigPredictor final : public PredictorInterface {
@@ -181,6 +192,8 @@ private:
     double currentAngularVelocity_ = 0.0;
     double syntheticTimestamp_ = 0.0;
     std::size_t acceptedSamplesSinceFit_ = 0;
+    double lastAcceptedTimestamp_ = -std::numeric_limits<double>::infinity();
+    int consecutiveRejected_ = 0;
 };
 
 class AngleObserver {
@@ -189,14 +202,9 @@ public:
     double update(double x, double y, double radius);
 
 private:
-    double angleTransformer(double x, double y);
-
-    double lastY_ = 0.0;
-    double lastX_ = 0.0;
-    bool hasLastPosition_ = false;
-    std::vector<double> lastAngle_;
-    int delta_ = 0;
-    ClockMode clockMode_;
+    bool hasPrevious_ = false;
+    double previousRawAngle_ = 0.0;
+    double continuousAngle_ = 0.0;
 };
 
 std::unique_ptr<PredictorInterface> CreatePredictor(MoveMode moveMode,

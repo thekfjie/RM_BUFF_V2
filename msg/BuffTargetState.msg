@@ -9,16 +9,21 @@ string source
 string color
 string mode
 
-# Target-frame state. If tf is unavailable, this falls back to the camera frame.
+# Observed state at header.stamp. On TF failure: camera optical frame, tf_ready=false.
 geometry_msgs/Point position
 geometry_msgs/Vector3 velocity
+# Future aim point at header.stamp + prediction_horizon, already predicted ONCE.
 geometry_msgs/Point predicted_position
+float64 prediction_horizon
+float64 depth_age
 
 # Camera-frame state kept for debugging and fallback consumers.
 geometry_msgs/Point camera_position
 geometry_msgs/Vector3 camera_velocity
 
-# Angular state in radians.
+# Radians: with tf_ready, target_frame must use x forward/y left/z up,
+# yaw=atan2(y,x), pitch=atan2(z,hypot(x,y)). Otherwise optical-relative
+# yaw points right/pitch up; consumers MUST NOT treat these as absolute commands.
 float64 yaw
 float64 pitch
 float64 v_yaw

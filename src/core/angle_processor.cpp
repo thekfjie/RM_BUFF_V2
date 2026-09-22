@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -140,24 +141,58 @@ std::pair<bool, int> FitStartDetect::update(double data) {
 SmallPredictor::SmallPredictor(double deltaT, int freq)
     : deltaAngle_(kSmallRuneSpeed * deltaT),
       defaultPredictionHorizon_(std::max(0.0, deltaT)),
-      warmupFrames_(std::max(1, static_cast<int>(std::ceil(static_cast<double>(freq) * deltaT)))) {}
+      warmupFrames_(std::max(5, static_cast<int>(std::ceil(static_cast<double>(freq) * std::max(0.1, deltaT))))),
+      freq_(std::max(1, freq)) {}
 
 PredictionResult SmallPredictor::update(double data, double timestampSeconds) {
-    (void) timestampSeconds;
+    if (!std::isfinite(data)) {
+        hasPrevious_ = false;
+        direction_ = 0.0;
+        return {};
+    }
+    const double timestamp = std::isfinite(timestampSeconds) ? timestampSeconds :
+        (hasPrevious_ ? previousTimestamp_ + 1.0 / freq_ : 0.0);
+    const double dt = timestamp - previousTimestamp_;
+    const double change = data - previousAngle_;
+    if (!hasPrevious_ || dt <= kMinimumObservationDt || dt > 0.5 ||
+        std::abs(change) > 3.0 * dt + 0.02) {
+        hasPrevious_ = true;
+        frameCount_ = 1;
+        directionEvidence_ = 0;
+        direction_ = 0.0;
+        filteredPhase_ = data;
+        phaseVariance_ = 0.0004;
+        previousTimestamp_ = timestamp;
+        previousAngle_ = data;
+        return {};
+    }
+    previousTimestamp_ = timestamp;
+    previousAngle_ = data;
     ++frameCount_;
-    if (frameCount_ == 1) {
-        firstAngle_ = data;
+    if (std::abs(change) > 1e-4) {
+        directionEvidence_ = std::clamp(directionEvidence_ + (change > 0.0 ? 1 : -1), -8, 8);
     }
-    if (frameCount_ >= warmupFrames_) {
-        if (direction_ == 0.0) {
-            direction_ = (data - firstAngle_ >= 0.0) ? 1.0 : -1.0;
-        }
-        return {true,
-                predictDelta(defaultPredictionHorizon_),
-                direction_ * kSmallRuneSpeed,
-                true};
+    const double confirmedDirection = directionEvidence_ >= 5 ? 1.0 :
+                                      directionEvidence_ <= -5 ? -1.0 : direction_;
+    const bool directionChanged = confirmedDirection != direction_;
+    if (directionChanged) {
+        direction_ = confirmedDirection;
+        filteredPhase_ = data;
+        phaseVariance_ = 0.0004;
     }
-    return {};
+    if (direction_ == 0.0 || frameCount_ < warmupFrames_) {
+        filteredPhase_ = data;
+        return {};
+    }
+    // Scalar phase KF with known signed angular speed. Time is measured, not
+    // inferred from frame count. The posterior is used by the pixel predictor.
+    const double prior = directionChanged ? data : filteredPhase_ + direction_ * kSmallRuneSpeed * dt;
+    phaseVariance_ += 0.005 * dt;
+    const double gain = phaseVariance_ / (phaseVariance_ + 0.0004);
+    filteredPhase_ = prior + gain * (data - prior);
+    phaseVariance_ *= 1.0 - gain;
+    return {true, predictDelta(defaultPredictionHorizon_), direction_ * kSmallRuneSpeed,
+            true, filteredPhase_ - data};
 }
 
 double SmallPredictor::predictDelta(double horizonSeconds) const {
@@ -185,6 +220,9 @@ BigPredictor::BigPredictor(double deltaT, int freq, BigPredictorConfig config)
     config_.maxAbsSpeed = std::max(1e-6, config_.maxAbsSpeed);
     config_.maxObservationGap = std::max(kMinimumObservationDt, config_.maxObservationGap);
     config_.maxPhaseJump = std::max(1e-6, config_.maxPhaseJump);
+    config_.minSampleSpan = std::max(0.0, config_.minSampleSpan);
+    config_.maxModelAge = std::max(kMinimumObservationDt, config_.maxModelAge);
+    config_.maxConsecutiveRejected = std::max(1, config_.maxConsecutiveRejected);
 }
 
 double BigPredictor::velocityAt(double timestamp, const FitState& fitState) {
@@ -234,6 +272,9 @@ bool BigPredictor::solveLinearModel(const std::vector<const SpeedSample*>& sampl
         observations.at<double>(static_cast<int>(index), 0) = samples[index]->velocity;
     }
 
+    // Three points with nearly identical phases cannot identify the model.
+    cv::SVD svd(design, cv::SVD::NO_UV);
+    if (svd.w.total() < 3 || svd.w.at<double>(2) <= 1e-6 * svd.w.at<double>(0)) return false;
     cv::Mat parameters;
     if (!cv::solve(design, observations, parameters, cv::DECOMP_SVD) ||
         parameters.rows != 3 || parameters.cols != 1) {
@@ -248,7 +289,8 @@ bool BigPredictor::solveLinearModel(const std::vector<const SpeedSample*>& sampl
 }
 
 bool BigPredictor::fitSinusoid() {
-    if (speedSamples_.size() < 3) {
+    if (speedSamples_.size() < 3 ||
+        speedSamples_.back().timestamp - speedSamples_.front().timestamp < config_.minSampleSpan) {
         fitState_.reset();
         return false;
     }
@@ -261,7 +303,12 @@ bool BigPredictor::fitSinusoid() {
 
     const double timeOrigin = speedSamples_.front().timestamp;
     std::optional<FitState> bestFit;
-    for (int step = 0; step < config_.omegaSearchSteps; ++step) {
+    // Repeatable RANSAC: one random three-point hypothesis per omega grid
+    // location, plus the full-window hypothesis for clean data. Refit consensus.
+    std::mt19937 random(0x42554646u);
+    const std::size_t third = allSamples.size() / 3;
+    for (int hypothesis = 0; hypothesis < 2 * config_.omegaSearchSteps; ++hypothesis) {
+        const int step = hypothesis / 2;
         const double ratio = static_cast<double>(step) /
                              static_cast<double>(config_.omegaSearchSteps - 1);
         const double omega = config_.minOmega +
@@ -270,7 +317,18 @@ bool BigPredictor::fitSinusoid() {
         double sinCoefficient = 0.0;
         double cosCoefficient = 0.0;
         double offset = 0.0;
-        if (!solveLinearModel(allSamples,
+        std::vector<const SpeedSample*> subset;
+        if (hypothesis % 2 != 0) {
+            // Stratification spreads samples in time and avoids duplicate IDs.
+            for (std::size_t part = 0; part < 3; ++part) {
+                const std::size_t begin = part * third;
+                const std::size_t end = part == 2 ? allSamples.size() : (part + 1) * third;
+                std::uniform_int_distribution<std::size_t> choose(begin, end - 1);
+                subset.push_back(allSamples[choose(random)]);
+            }
+        }
+        const auto& seedSamples = subset.empty() ? allSamples : subset;
+        if (!solveLinearModel(seedSamples,
                               omega,
                               timeOrigin,
                               sinCoefficient,
@@ -353,6 +411,8 @@ void BigPredictor::resetFit() {
     fitState_.reset();
     currentAngularVelocity_ = 0.0;
     acceptedSamplesSinceFit_ = 0;
+    lastAcceptedTimestamp_ = -std::numeric_limits<double>::infinity();
+    consecutiveRejected_ = 0;
 }
 
 double BigPredictor::normalizeTimestamp(double timestampSeconds) {
@@ -368,7 +428,9 @@ double BigPredictor::normalizeTimestamp(double timestampSeconds) {
 }
 
 bool BigPredictor::modelReady() const {
-    if (!fitState_.has_value() || speedSamples_.empty()) {
+    if (!fitState_.has_value() || speedSamples_.empty() ||
+        currentTimestamp_ - lastAcceptedTimestamp_ > config_.maxModelAge ||
+        consecutiveRejected_ >= config_.maxConsecutiveRejected) {
         return false;
     }
     const double inlierRatio = static_cast<double>(fitState_->inliers) /
@@ -382,6 +444,8 @@ PredictionResult BigPredictor::update(double data, double timestampSeconds) {
     const double timestamp = normalizeTimestamp(timestampSeconds);
     currentTimestamp_ = timestamp;
     if (!std::isfinite(data) || !std::isfinite(timestamp)) {
+        resetFit();
+        hasPreviousObservation_ = false;
         return {};
     }
 
@@ -410,14 +474,19 @@ PredictionResult BigPredictor::update(double data, double timestampSeconds) {
 
     const double velocity = phaseDelta / dt;
     if (!std::isfinite(velocity) || std::abs(velocity) > config_.maxAbsSpeed) {
-        const bool ready = modelReady();
-        currentAngularVelocity_ = ready ? velocityAt(timestamp, fitState_.value()) : 0.0;
-        return {ready,
-                ready ? predictDelta(defaultPredictionHorizon_) : 0.0,
-                currentAngularVelocity_,
-                ready};
+        ++consecutiveRejected_;
+        if (consecutiveRejected_ >= config_.maxConsecutiveRejected ||
+            timestamp - lastAcceptedTimestamp_ > config_.maxModelAge) resetFit();
+        // A rejected current measurement is never reported as a ready target.
+        return {};
     }
 
+    const double midpoint = timestamp - dt * 0.5;
+    const bool agreesWithModel = !fitState_.has_value() ||
+        std::abs(velocity - velocityAt(midpoint, *fitState_)) <= config_.inlierThreshold;
+    consecutiveRejected_ = agreesWithModel ? 0 : consecutiveRejected_ + 1;
+    if (consecutiveRejected_ >= config_.maxConsecutiveRejected) resetFit();
+    lastAcceptedTimestamp_ = timestamp;
     currentAngularVelocity_ = velocity;
     speedSamples_.push_back({timestamp - dt * 0.5, velocity});
     while (speedSamples_.size() > config_.maxSamples) {
@@ -432,7 +501,7 @@ PredictionResult BigPredictor::update(double data, double timestampSeconds) {
         acceptedSamplesSinceFit_ = 0;
     }
 
-    const bool ready = modelReady();
+    const bool ready = modelReady() && agreesWithModel;
     if (ready) {
         currentAngularVelocity_ = velocityAt(timestamp, fitState_.value());
     }
@@ -449,63 +518,30 @@ double BigPredictor::predictDelta(double horizonSeconds) const {
     return integrateVelocity(currentTimestamp_, horizonSeconds, fitState_.value());
 }
 
-AngleObserver::AngleObserver(ClockMode clockMode) : clockMode_(clockMode) {}
-
-double AngleObserver::angleTransformer(double x, double y) {
-    double theta = std::atan2(y, x);
-    if (lastAngle_.empty()) {
-        lastAngle_.push_back(theta);
-        return theta;
-    }
-
-    double delta = std::fabs(std::round((theta - lastAngle_.front()) / CV_PI)) * CV_PI;
-    if (clockMode_ == ClockMode::Anticlockwise) {
-        delta *= -1.0;
-    }
-    theta += delta;
-    lastAngle_.front() = theta;
-    return theta;
-}
+AngleObserver::AngleObserver(ClockMode /*clockMode*/) {}
 
 double AngleObserver::update(double x, double y, double radius) {
-    if (!hasLastPosition_) {
-        lastX_ = x;
-        lastY_ = y;
-        hasLastPosition_ = true;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(radius) ||
+        radius <= 0.0 || std::hypot(x, y) < 1e-6) {
+        hasPrevious_ = false;
+        return std::numeric_limits<double>::quiet_NaN();
     }
-    if (delta_ != 0) {
-        const cv::Point2f rotated = Rotate(2.0 * CV_PI / 5.0 * static_cast<double>(5 - delta_),
-                                           cv::Point2f(static_cast<float>(x), static_cast<float>(y)));
-        x = rotated.x;
-        y = rotated.y;
+    const double raw = std::atan2(y, x);
+    if (!hasPrevious_) {
+        previousRawAngle_ = continuousAngle_ = raw;
+        hasPrevious_ = true;
+        return continuousAngle_;
     }
-    if (EuclideanDistance(cv::Point2f(static_cast<float>(lastX_), static_cast<float>(lastY_)),
-                          cv::Point2f(static_cast<float>(x), static_cast<float>(y))) > radius * 0.5) {
-        std::vector<cv::Point2f> points;
-        points.reserve(5);
-        for (int time = 0; time < 5; ++time) {
-            points.push_back(Rotate(2.0 * CV_PI / 5.0 * static_cast<double>(time),
-                                    cv::Point2f(static_cast<float>(lastX_), static_cast<float>(lastY_))));
-        }
-        int bestIndex = 0;
-        double bestDistance = std::numeric_limits<double>::max();
-        for (int index = 0; index < 5; ++index) {
-            const double distance = EuclideanDistance(cv::Point2f(static_cast<float>(x), static_cast<float>(y)), points[index]);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestIndex = index;
-            }
-        }
-        const cv::Point2f rotated = Rotate(2.0 * CV_PI / 5.0 * static_cast<double>(5 - bestIndex),
-                                           cv::Point2f(static_cast<float>(x), static_cast<float>(y)));
-        x = rotated.x;
-        y = rotated.y;
-        delta_ += bestIndex;
+    double delta = std::remainder(raw - previousRawAngle_, 2.0 * CV_PI);
+    // Separate a change of blade from continuous rotor phase. This assumes
+    // less than half a blade spacing of motion between valid observations.
+    // The pipeline resets history across long observation gaps.
+    if (std::abs(delta) > CV_PI / 5.0) {
+        delta = std::remainder(delta, 2.0 * CV_PI / 5.0);
     }
-    const double angle = angleTransformer(x, y);
-    lastX_ = x;
-    lastY_ = y;
-    return angle;
+    continuousAngle_ += delta;
+    previousRawAngle_ = raw;
+    return continuousAngle_;
 }
 
 std::string SmallPredictor::debugState() const {

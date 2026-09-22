@@ -16,14 +16,19 @@ float64 confidence
 int32 class_id
 
 # Camera optical-frame angular/space observation.
-# camera_position is the predicted/compensated aim point. When PnP is ready,
-# camera_pose keeps the current measured blade pose for diagnostics.
+# header.stamp is capture time. camera_position is the observed blade centre.
+# camera_aim_position is the future point, at capture time + prediction_horizon.
+# Angles here are optical-frame relative angles (yaw right, pitch up).
 geometry_msgs/Vector3 aim_ray
 geometry_msgs/Point camera_position
+geometry_msgs/Point camera_aim_position
 geometry_msgs/Pose camera_pose
 float64 yaw
 float64 pitch
 float64 target_distance
+float64 prediction_horizon
+# Seconds since the last accepted metric depth; -1 for fixed-distance rays.
+float64 depth_age
 
 # Energy mechanism phase state.
 float64 phase

@@ -49,7 +49,7 @@ public:
         const std::string debugImageTopic = this->get_parameter("debug_image_topic").as_string();
 
         imageSub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            imageTopic, rclcpp::SensorDataQoS(),
+            imageTopic, rclcpp::SensorDataQoS().keep_last(1),
             std::bind(&BuffDetectorNode::imageCallback, this, std::placeholders::_1));
         cameraInfoSub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             cameraInfoTopic, rclcpp::SensorDataQoS(),
@@ -92,7 +92,7 @@ private:
         this->declare_parameter<double>("yolo_nms_threshold", 0.45);
         this->declare_parameter<int>("yolo_input_width", 640);
         this->declare_parameter<int>("yolo_input_height", 640);
-        this->declare_parameter<int>("yolo_refresh_interval", 30);
+        this->declare_parameter<int>("yolo_refresh_interval", 1);
         this->declare_parameter<bool>("yolo_show_debug", false);
         this->declare_parameter<bool>("publish_debug_image", true);
         this->declare_parameter<bool>("show_debug_window", false);
@@ -105,10 +105,13 @@ private:
         this->declare_parameter<double>("extra_delay_sec", 0.0);
 
         this->declare_parameter<bool>("enable_pnp", false);
+        this->declare_parameter<double>("pnp_depth_max_age", 0.15);
+        this->declare_parameter<double>("pnp_max_reprojection_error", 3.0);
+        this->declare_parameter<double>("max_image_age", 0.25);
         this->declare_parameter<std::vector<double>>("pnp_object_points", {});
 
-        this->declare_parameter<std::vector<int64_t>>("hsv_lower", {0, 100, 100});
-        this->declare_parameter<std::vector<int64_t>>("hsv_upper", {15, 255, 255});
+        this->declare_parameter<std::vector<int64_t>>("hsv_lower", {90, 100, 100});
+        this->declare_parameter<std::vector<int64_t>>("hsv_upper", {130, 255, 255});
         this->declare_parameter<int>("kernel", 3);
         this->declare_parameter<double>("inside_rate", 0.6);
         this->declare_parameter<double>("outside_rate", 1.5);
@@ -122,8 +125,7 @@ private:
         const std::string mode = this->get_parameter("mode").as_string();
         config.moveMode = (mode == "big") ? MoveMode::Big : MoveMode::Small;
 
-        const std::string color = this->get_parameter("color").as_string();
-        config.clockMode = (color == "red") ? ClockMode::Clockwise : ClockMode::Anticlockwise;
+        config.clockMode = ClockMode::Automatic;
 
         config.deltaT = this->get_parameter("delta_t").as_double();
         config.freq = static_cast<int>(this->get_parameter("freq").as_int());
@@ -173,15 +175,21 @@ private:
         publishDebugImage_ = this->get_parameter("publish_debug_image").as_bool();
         showDebugWindow_ = this->get_parameter("show_debug_window").as_bool();
         enablePnp_ = this->get_parameter("enable_pnp").as_bool();
+        depthMaxAge_ = this->get_parameter("pnp_depth_max_age").as_double();
+        maxReprojectionError_ = this->get_parameter("pnp_max_reprojection_error").as_double();
+        maxImageAge_ = this->get_parameter("max_image_age").as_double();
         targetDistance_ = this->get_parameter("target_distance").as_double();
         pnpObjectPoints_ = ParseObjectPoints(this->get_parameter("pnp_object_points").as_double_array());
         staticRoi_ = ParseRoiParameter(GetIntegerArrayParameterOrEmpty(*this, "static_r_roi"));
         staticFanRoi_ = ParseRoiParameter(GetIntegerArrayParameterOrEmpty(*this, "static_fan_roi"));
 
-        if (enablePnp_ && pnpObjectPoints_.size() < 4) {
-            RCLCPP_WARN(this->get_logger(),
-                        "enable_pnp=true but pnp_object_points has fewer than 4 points; falling back to PIXEL_RAY");
-        }
+        if (enablePnp_ && pnpObjectPoints_.size() != 4)
+            throw std::invalid_argument("PnP requires exactly four measured blade points in keypoint order 0,1,3,4");
+        if (!std::isfinite(targetDistance_) || targetDistance_ <= 0.0 ||
+            !std::isfinite(depthMaxAge_) || depthMaxAge_ < 0.0 ||
+            !std::isfinite(maxReprojectionError_) || maxReprojectionError_ <= 0.0 ||
+            !std::isfinite(maxImageAge_) || maxImageAge_ <= 0.0)
+            throw std::invalid_argument("Invalid BUFF distance, depth or image age parameters");
     }
 
     std::unique_ptr<DetectorInterface> createDetector() const {
@@ -224,6 +232,14 @@ private:
     }
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
+        if ((!msg->distortion_model.empty() && msg->distortion_model != "plumb_bob" &&
+             msg->distortion_model != "rational_polynomial") ||
+            (!msg->d.empty() && !IsSupportedDistortionSize(msg->d.size()))) {
+            std::lock_guard<std::mutex> lock(cameraMutex_);
+            cameraInfoReady_ = false;
+            RCLCPP_WARN(this->get_logger(), "Unsupported CameraInfo distortion model/count");
+            return;
+        }
         CameraModel camera;
         camera.cameraMatrix = cv::Mat(3, 3, CV_64F, const_cast<double*>(msg->k.data())).clone();
         if (msg->d.empty()) {
@@ -258,15 +274,42 @@ private:
             if (!packet.has_value()) {
                 return;
             }
-            processFrame(packet.value());
+            try {
+                processFrame(packet.value());
+            } catch (const std::exception& ex) {
+                pipelineInitialized_ = false;
+                depth_.reset();
+                pnpSolver_.reset();
+                publishObservation(packet->header, PipelineOutput{}, false);
+                RCLCPP_ERROR(this->get_logger(), "BUFF frame rejected: %s", ex.what());
+            }
         }
     }
 
     void processFrame(const FramePacket& packet) {
         ++frameCount_;
+        const rclcpp::Time stamp(packet.header.stamp);
+        const double age = (this->now() - stamp).seconds();
+        if (stamp.nanoseconds() == 0 || age < 0.0 || age > maxImageAge_) {
+            depth_.reset();
+            pnpSolver_.reset();
+            if (pipeline_) pipeline_->resetMotion();
+            publishObservation(packet.header, PipelineOutput{}, false);
+            return;
+        }
         const cv::Mat bgr = MakeBgrFrame(packet);
         if (bgr.empty()) {
+            publishObservation(packet.header, PipelineOutput{}, false);
             return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(cameraMutex_);
+            if (cameraInfoReady_ &&
+                (cameraModel_.imageWidth != bgr.cols || cameraModel_.imageHeight != bgr.rows ||
+                 (!packet.header.frame_id.empty() && packet.header.frame_id != cameraModel_.frameId))) {
+                throw std::invalid_argument("Image dimensions/frame do not match CameraInfo");
+            }
         }
 
         if (!pipelineInitialized_ && !initializePipeline(bgr)) {
@@ -284,13 +327,14 @@ private:
         if (output.rBox.area() == 0.0) {
             ++lostFrames_;
             pnpSolver_.reset();
+            depth_.reset();
             publishObservation(packet.header, output, false);
             publishDebugImage(packet.header, bgr, output, false, "detector lost");
             return;
         }
 
         lostFrames_ = 0;
-        publishObservation(packet.header, output, true);
+        output = publishObservation(packet.header, output, true);
         publishDebugImage(packet.header,
                           bgr,
                           output,
@@ -298,8 +342,8 @@ private:
                           output.predictionReady ? "observation ready" : "tracking warmup");
     }
 
-    void publishObservation(const std_msgs::msg::Header& imageHeader,
-                            const PipelineOutput& output,
+    PipelineOutput publishObservation(const std_msgs::msg::Header& imageHeader,
+                            PipelineOutput output,
                             bool found) {
         CameraModel camera;
         bool cameraReady = false;
@@ -308,17 +352,12 @@ private:
             camera = cameraModel_;
             cameraReady = cameraInfoReady_;
         }
-
-        auto observation = rm_buff_tracker::msg::BuffObservation();
+        rm_buff_tracker::msg::BuffObservation observation;
         observation.header = imageHeader;
-        if (observation.header.frame_id.empty() && !camera.frameId.empty()) {
-            observation.header.frame_id = camera.frameId;
-        }
-        observation.tracking = found;
-        observation.prediction_ready = output.predictionReady;
-        observation.camera_info_ready = cameraReady;
-        observation.pnp_ready = false;
+        if (observation.header.frame_id.empty()) observation.header.frame_id = camera.frameId;
         observation.source = kSourceNone;
+        observation.depth_age = -1.0;
+        observation.camera_info_ready = cameraReady;
         observation.color = this->get_parameter("color").as_string();
         observation.mode = this->get_parameter("mode").as_string();
         observation.r_center_px = ToPointMsg(output.rBox.center2f());
@@ -326,60 +365,96 @@ private:
         observation.radius_px = output.radius;
         observation.confidence = output.confidence;
         observation.class_id = output.classId;
-        observation.target_distance = targetDistance_;
-        observation.phase = output.observedAngle;
+        observation.phase = output.observedAngle + output.phaseCorrection;
         observation.raw_phase = output.rawAngle;
         observation.phase_delta = output.deltaAngle;
-        observation.compensated_phase_delta = output.compensatedDelta;
         observation.phase_velocity = output.angularVelocity;
         observation.camera_pose.orientation.w = 1.0;
 
-        const cv::Point2d aimPoint = output.predictionReady
-            ? output.compensatedPoint
-            : cv::Point2d(output.fanBladeBox.center2f().x, output.fanBladeBox.center2f().y);
-        observation.aim_point_px = ToPointMsg(aimPoint);
-
-        if (found && cameraReady) {
-            RayProjection projection = ProjectPixelToRay(camera, aimPoint, targetDistance_);
-            if (projection.valid) {
-                observation.source = kSourcePixelRay;
-                observation.yaw = projection.yaw;
-                observation.pitch = projection.pitch;
-                observation.aim_ray = ToVectorMsg(projection.ray);
-                observation.camera_position = ToPointMsg(projection.point);
-                observation.camera_pose.position = observation.camera_position;
+        const double captureTime = rclcpp::Time(imageHeader.stamp).seconds();
+        double distance = targetDistance_;
+        bool depthValid = !enablePnp_;
+        std::optional<PnpResult> pose;
+        if (found && cameraReady && enablePnp_) {
+            if (hasLastRawPhase_ &&
+                std::abs(std::remainder(output.rawAngle - lastRawPhase_, 2.0 * CV_PI)) > CV_PI / 5.0) {
+                pnpSolver_.reset();
+                depth_.reset();
             }
-
-            if (enablePnp_ && pnpObjectPoints_.size() >= 4) {
-                const std::optional<PnpResult> pnp =
-                    pnpSolver_.solve(camera, output.keypoints, pnpObjectPoints_);
-                if (pnp.has_value()) {
-                    const cv::Point3d pnpPosition(pnp->tvec.at<double>(0),
-                                                  pnp->tvec.at<double>(1),
-                                                  pnp->tvec.at<double>(2));
-                    const double pnpDistance = std::sqrt(pnpPosition.x * pnpPosition.x +
-                                                         pnpPosition.y * pnpPosition.y +
-                                                         pnpPosition.z * pnpPosition.z);
-                    // PnP supplies metric depth, while the predicted/compensated
-                    // pixel supplies the future firing direction. Publishing the
-                    // raw current-blade tvec here would silently discard prediction.
-                    projection = ProjectPixelToRay(camera, aimPoint, pnpDistance);
-                    if (projection.valid) {
-                        observation.pnp_ready = true;
-                        observation.source = kSourcePnp;
-                        observation.yaw = projection.yaw;
-                        observation.pitch = projection.pitch;
-                        observation.aim_ray = ToVectorMsg(projection.ray);
-                        observation.camera_position = ToPointMsg(projection.point);
-                        observation.camera_pose.position = ToPointMsg(pnpPosition);
-                        observation.camera_pose.orientation = RvecToQuaternion(pnp->rvec);
-                        observation.target_distance = pnpDistance;
-                    }
+            pose = pnpSolver_.solve(camera, output.keypoints, pnpObjectPoints_);
+            if (pose.has_value() && pose->reprojectionError <= maxReprojectionError_) {
+                const double range = cv::norm(pose->tvec);
+                if (std::isfinite(range) && range > 0.0) {
+                    depth_ = DepthState{range, captureTime};
+                }
+            } else if (pose.has_value()) {
+                pose.reset();
+                pnpSolver_.reset();
+            }
+            if (depth_.has_value()) {
+                const double age = captureTime - depth_->timestamp;
+                if (age >= 0.0 && age <= depthMaxAge_) {
+                    distance = depth_->distance;
+                    depthValid = true;
+                    observation.depth_age = age;
+                    observation.pnp_ready = true; // metric depth is fresh or held within its TTL
+                    observation.source = pose.has_value() ? kSourcePnp : "PNP_HELD";
+                } else {
+                    depth_.reset();
                 }
             }
         }
-
+        if (found) {
+            lastRawPhase_ = output.rawAngle;
+            hasLastRawPhase_ = true;
+        } else {
+            hasLastRawPhase_ = false;
+        }
+        if (found && cameraReady && depthValid) {
+            // Recompute once using measured frame age and metric depth when available.
+            // delta_t is an additional horizon; it must exclude all terms below.
+            const double age = this->now().seconds() - captureTime;
+            if (age < 0.0 || age > maxImageAge_) {
+                observationPub_->publish(observation);
+                output.predictionReady = false;
+                return output;
+            }
+            double horizon = std::max(0.0, pipelineConfig_.deltaT) + age;
+            if (pipelineConfig_.enableCompensation) {
+                CompensationConfig compensation = pipelineConfig_.compensationConfig;
+                compensation.targetDistance = distance;
+                horizon += FlightTimeCompensator(compensation).totalDelay();
+            }
+            pipeline_->setPredictionHorizon(output, horizon);
+            const cv::Point2d observedPixel(output.fanBladeBox.center2f());
+            const cv::Point2d aimPixel = output.predictionReady ? output.compensatedPoint : observedPixel;
+            const RayProjection current = ProjectPixelToRay(camera, observedPixel, distance);
+            const RayProjection aim = ProjectPixelToRay(camera, aimPixel, distance);
+            if (current.valid && aim.valid) {
+                observation.tracking = true;
+                observation.prediction_ready = output.predictionReady;
+                if (!enablePnp_) observation.source = kSourcePixelRay;
+                observation.camera_position = ToPointMsg(current.point);
+                observation.camera_aim_position = ToPointMsg(aim.point);
+                observation.aim_point_px = ToPointMsg(aimPixel);
+                observation.aim_ray = ToVectorMsg(aim.ray);
+                observation.yaw = current.yaw;
+                observation.pitch = current.pitch;
+                observation.target_distance = distance;
+                observation.prediction_horizon = output.predictionReady ? output.predictionHorizon : 0.0;
+                observation.compensated_phase_delta = output.compensatedDelta;
+                observation.camera_pose.position = observation.camera_position;
+                if (pose.has_value()) {
+                    observation.camera_pose.position.x = pose->tvec.at<double>(0);
+                    observation.camera_pose.position.y = pose->tvec.at<double>(1);
+                    observation.camera_pose.position.z = pose->tvec.at<double>(2);
+                    observation.camera_pose.orientation = RvecToQuaternion(pose->rvec);
+                }
+            }
+        }
         observationPub_->publish(observation);
+        if (!observation.tracking) output.predictionReady = false;
+        return output;
     }
 
     void publishDebugImage(const std_msgs::msg::Header& header,
@@ -428,6 +503,13 @@ private:
     int frameCount_ = 0;
     int lostFrames_ = 0;
     double targetDistance_ = 7.0;
+    struct DepthState { double distance; double timestamp; };
+    std::optional<DepthState> depth_;
+    double depthMaxAge_ = 0.15;
+    double maxReprojectionError_ = 3.0;
+    double maxImageAge_ = 0.25;
+    bool hasLastRawPhase_ = false;
+    double lastRawPhase_ = 0.0;
     Parameter parameter_;
     PipelineConfig pipelineConfig_;
     std::vector<cv::Point3f> pnpObjectPoints_;

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include <opencv2/calib3d.hpp>
@@ -45,6 +46,12 @@ int main() {
     if (!right.valid || !Near(right.yaw, CV_PI / 4.0, 1e-6) || !Near(right.pitch, 0.0, 1e-9)) {
         return Fail("one focal length right should project to 45 degree yaw");
     }
+    const auto flu = gutcpp::ProjectForwardLeftUpPointToAngles({7.0, -7.0, 0.0});
+    if (!flu.valid || !Near(flu.yaw, -CV_PI / 4.0, 1e-9))
+        return Fail("optical-right target must have negative yaw in a forward-left-up frame");
+    if (gutcpp::ProjectPixelToRay(camera, {640.0, 360.0}, -7.0).valid ||
+        gutcpp::ProjectPixelToRay(camera, {640.0, 360.0}, std::numeric_limits<double>::quiet_NaN()).valid)
+        return Fail("nonpositive or non-finite depth must not produce a valid ray");
 
     const gutcpp::RayProjection up =
         gutcpp::ProjectPixelToRay(camera, cv::Point2d(640.0, -640.0), 7.0);

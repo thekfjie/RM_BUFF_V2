@@ -12,6 +12,7 @@
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <depend>ament_index_cpp</depend>
+  <depend>libopencv-dev</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

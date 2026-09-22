@@ -1,4 +1,5 @@
 #include "buff_ros_utils.hpp"
+#include "core/target_class.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -38,7 +39,7 @@ std::optional<cv::Rect> ParseRoiParameter(const std::vector<int64_t>& values) {
 }
 
 int PreferredYoloSeedClassId(const std::string& color) {
-    return (color == "red") ? 1 : 2;
+    return TargetClassForColor(color);
 }
 
 void DeclareBigPredictorParameters(rclcpp::Node& node) {
@@ -55,6 +56,9 @@ void DeclareBigPredictorParameters(rclcpp::Node& node) {
     node.declare_parameter<double>("big_fit_max_abs_speed", 2.090);
     node.declare_parameter<double>("big_fit_max_observation_gap", 0.50);
     node.declare_parameter<double>("big_fit_max_phase_jump", 0.80);
+    node.declare_parameter<double>("big_fit_min_sample_span", 1.5);
+    node.declare_parameter<double>("big_fit_max_model_age", 0.25);
+    node.declare_parameter<int>("big_fit_max_consecutive_rejected", 8);
 }
 
 BigPredictorConfig ReadBigPredictorConfig(const rclcpp::Node& node) {
@@ -74,6 +78,9 @@ BigPredictorConfig ReadBigPredictorConfig(const rclcpp::Node& node) {
     config.maxAbsSpeed = node.get_parameter("big_fit_max_abs_speed").as_double();
     config.maxObservationGap = node.get_parameter("big_fit_max_observation_gap").as_double();
     config.maxPhaseJump = node.get_parameter("big_fit_max_phase_jump").as_double();
+    config.minSampleSpan = node.get_parameter("big_fit_min_sample_span").as_double();
+    config.maxModelAge = node.get_parameter("big_fit_max_model_age").as_double();
+    config.maxConsecutiveRejected = static_cast<int>(node.get_parameter("big_fit_max_consecutive_rejected").as_int());
     return config;
 }
 

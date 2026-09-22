@@ -4,6 +4,7 @@
 #include <cmath>
 #include <functional>
 #include <string>
+#include <stdexcept>
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -17,7 +18,7 @@ BuffNode::BuffNode() : Node("buff_tracker_node") {
     loadRuntimeConfig();
 
     imageSub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        "~/image_raw", rclcpp::SensorDataQoS(),
+        "~/image_raw", rclcpp::SensorDataQoS().keep_last(1),
         std::bind(&BuffNode::imageCallback, this, std::placeholders::_1));
 
     predictionPub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
@@ -31,6 +32,20 @@ BuffNode::BuffNode() : Node("buff_tracker_node") {
 
     debugImagePub_ = this->create_publisher<sensor_msgs::msg::Image>(
         "~/debug_image", 10);
+    maxImageAge_ = get_parameter("max_image_age").as_double();
+    if (!std::isfinite(maxImageAge_) || maxImageAge_ <= 0.0)
+        throw std::invalid_argument("max_image_age must be finite and positive");
+    watchdog_ = create_wall_timer(std::chrono::milliseconds(20), [this] {
+        if (hasImage_ && std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - lastImageReceipt_).count() > maxImageAge_) {
+            auto header = lastImageHeader_;
+            header.stamp = now();
+            publishBuffTarget(header, PipelineOutput{}, false);
+            publishDebugState(PipelineOutput{}, false);
+            pipelineInitialized_ = false;
+            hasImage_ = false;
+        }
+    });
 
     RCLCPP_INFO(this->get_logger(),
                 "BuffNode initialized. detector=%s, waiting for images on ~/image_raw",
@@ -42,6 +57,7 @@ void BuffNode::declareParameters() {
     this->declare_parameter<std::string>("mode", "small");
     this->declare_parameter<double>("delta_t", 0.2);
     this->declare_parameter<int>("freq", 50);
+    this->declare_parameter<double>("max_image_age", 0.25);
     DeclareBigPredictorParameters(*this);
 
     this->declare_parameter<std::string>("detector_type", "hsv");
@@ -80,8 +96,7 @@ PipelineConfig BuffNode::buildPipelineConfig() const {
     const std::string mode = this->get_parameter("mode").as_string();
     config.moveMode = (mode == "big") ? MoveMode::Big : MoveMode::Small;
 
-    const std::string color = this->get_parameter("color").as_string();
-    config.clockMode = (color == "red") ? ClockMode::Clockwise : ClockMode::Anticlockwise;
+    config.clockMode = ClockMode::Automatic;
 
     config.deltaT = this->get_parameter("delta_t").as_double();
     config.freq = static_cast<int>(this->get_parameter("freq").as_int());
@@ -175,6 +190,11 @@ bool BuffNode::ensureYoloAssistLoaded() {
 bool BuffNode::initializePipelineFromSeed(const cv::Mat& frame,
                                           const DetectionResult& seed,
                                           const std::string& reason) {
+    if (pipelineInitialized_ && pipeline_) {
+        const bool locked = pipeline_->reseed(frame, parameter_, BBoxToRect(seed.rBox), BBoxToRect(seed.fanBladeBox));
+        if (locked) lostFrames_ = 0;
+        return locked;
+    }
     auto hsvDetector = std::make_unique<HsvDetector>(false);
     auto newPipeline = std::make_unique<BuffPipeline>(std::move(hsvDetector), pipelineConfig_);
     if (!newPipeline->initialize(frame, parameter_, BBoxToRect(seed.rBox), BBoxToRect(seed.fanBladeBox))) {
@@ -284,6 +304,8 @@ void BuffNode::publishBuffTarget(const std_msgs::msg::Header& header,
     targetMsg.delta_angle = output.deltaAngle;
     targetMsg.compensated_delta = output.compensatedDelta;
     targetMsg.angular_velocity = output.angularVelocity;
+    targetMsg.prediction_horizon = output.predictionHorizon;
+    targetMsg.phase_correction = output.phaseCorrection;
 
     targetPub_->publish(targetMsg);
 }
@@ -328,6 +350,17 @@ void BuffNode::publishDebugImage(const std_msgs::msg::Header& header,
 
 void BuffNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
     ++frameCount_;
+    hasImage_ = true;
+    lastImageReceipt_ = std::chrono::steady_clock::now();
+    lastImageHeader_ = msg->header;
+    const rclcpp::Time capture(msg->header.stamp);
+    const double inputAge = (now() - capture).seconds();
+    if (capture.nanoseconds() == 0 || inputAge < 0.0 || inputAge > maxImageAge_) {
+        publishBuffTarget(msg->header, PipelineOutput{}, false);
+        publishDebugState(PipelineOutput{}, false);
+        pipelineInitialized_ = false;
+        return;
+    }
 
     cv::Mat bgr = MakeBgrFrame(*msg);
 
@@ -373,6 +406,15 @@ void BuffNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
         return;
     }
 
+    const double imageAge = (now() - capture).seconds();
+    if (imageAge < 0.0 || imageAge > maxImageAge_) {
+        publishBuffTarget(msg->header, PipelineOutput{}, false);
+        publishDebugState(PipelineOutput{}, false);
+        pipelineInitialized_ = false;
+        return;
+    }
+    if (output.predictionReady)
+        pipeline_->setPredictionHorizon(output, output.predictionHorizon + imageAge);
     lostFrames_ = 0;
     publishDebugState(output, true);
     publishBuffTarget(msg->header, output, true);

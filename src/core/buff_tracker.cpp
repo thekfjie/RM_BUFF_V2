@@ -316,14 +316,20 @@ std::optional<std::vector<FanBlade>> F_BuffTracker::getFanBlade(cv::Mat& mask) {
         safeImshow("mask__", mask);
     }
 
-    if (fanBladeList_[0].bbox.area() == 0.0 && fanBladeList.size() == 1U) {
-        fanBladeList[0].bbox.id = 0;
-        return fanBladeList;
-    }
-    if (fanBladeList_[0].bbox.area() == 0.0 && fanBladeList.size() != 1U) {
-        lastFailureReason_ = "Expected exactly one initial lit fan blade contour, got " +
-                             std::to_string(fanBladeList.size());
-        return std::nullopt;
+    if (fanBladeList_[0].bbox.area() == 0.0) {
+        // YOLO/manual ROI already selected a blade. Associate that seed even
+        // when more than one blade is lit; contour count is not an identity.
+        const auto selected = std::min_element(fanBladeList.begin(), fanBladeList.end(),
+            [this](const FanBlade& lhs, const FanBlade& rhs) {
+                return lhs.bbox.centerDistance(fanBladeBox_) < rhs.bbox.centerDistance(fanBladeBox_);
+            });
+        if (selected == fanBladeList.end() || selected->bbox.centerDistance(fanBladeBox_) > radius_ * 0.5) {
+            lastFailureReason_ = "No initial blade contour matches the selected seed";
+            return std::nullopt;
+        }
+        FanBlade seed = *selected;
+        seed.bbox.id = 0;
+        return std::vector<FanBlade>{seed};
     }
 
     std::vector<FanBlade> correctFanBlade;
@@ -385,27 +391,20 @@ std::optional<std::vector<FanBlade>> F_BuffTracker::getFanBlade(cv::Mat& mask) {
         }
     }
 
-    if (realFanBladeList.size() == 1U) {
-        realFanBladeList[0].bbox.id = 0;
-        states_[0] = "target";
-        for (int innerIndex = 1; innerIndex < 5; ++innerIndex) {
-            states_[static_cast<std::size_t>(innerIndex)] = "unlighted";
-        }
-    } else if (static_cast<int>(realFanBladeList.size()) > fanNum_) {
-        for (const auto& fan : realFanBladeList) {
-            const int id = fan.bbox.id;
-            if (id >= 0 && id < 5 && states_[static_cast<std::size_t>(id)] == "target") {
-                states_[static_cast<std::size_t>(id)] = "shot";
-            }
-        }
-        for (const auto& fan : realFanBladeList) {
-            const int id = fan.bbox.id;
-            if (id >= 0 && id < 5 && states_[static_cast<std::size_t>(id)] == "unlighted") {
-                states_[static_cast<std::size_t>(id)] = "target";
-                break;
-            }
-        }
+    // HSV supplies geometry only. A larger contour count is NOT evidence that
+    // the old target was hit. Keep the selected seed until it disappears;
+    // activation-aware YOLO must choose any replacement target.
+    const cv::Point2f expectedCenter = fanBladeBox_.center2f() - center_ + rBox_.center2f();
+    const auto selected = std::min_element(realFanBladeList.begin(), realFanBladeList.end(),
+        [&expectedCenter](const FanBlade& lhs, const FanBlade& rhs) {
+            return cv::norm(lhs.bbox.center2f() - expectedCenter) < cv::norm(rhs.bbox.center2f() - expectedCenter);
+        });
+    if (selected == realFanBladeList.end() || cv::norm(selected->bbox.center2f() - expectedCenter) > radius_ * 0.5) {
+        lastFailureReason_ = "Selected blade disappeared; activation-aware reselection required";
+        return std::nullopt;
     }
+    std::fill(states_.begin(), states_.end(), "unlighted");
+    states_[static_cast<std::size_t>(selected->bbox.id)] = "target";
     return realFanBladeList;
 }
 
@@ -457,7 +456,7 @@ bool F_BuffTracker::update(cv::Mat& frame, bool isOpenMaybeTarget) {
     cv::circle(mask, rBox_.center2i(), static_cast<int>(radius_ * parameter_.outsideRate), cv::Scalar(0, 0, 0), 3);
 
     const std::optional<std::vector<FanBlade>> fanBladeList = getFanBlade(mask);
-    cv::waitKey(1);
+    if (isImshow_) cv::waitKey(1);
     center_ = rBox_.center2f();
     ++count_;
     if (!fanBladeList.has_value()) {
@@ -470,14 +469,16 @@ bool F_BuffTracker::update(cv::Mat& frame, bool isOpenMaybeTarget) {
     lastFailureReason_.clear();
 
     fanNum_ = static_cast<int>(fanBladeList->size());
+    bool targetObserved = false;
     for (const auto& fan : fanBladeList.value()) {
         const BBox& box = fan.bbox;
         if (box.id != 0) {
             lightedFanBladeIdList.push_back(box.id);
         }
-        fanBladeList_[static_cast<std::size_t>(box.id)].bbox = box;
+        fanBladeList_[static_cast<std::size_t>(box.id)] = fan;
         if (states_[static_cast<std::size_t>(box.id)] == "target") {
             fanBladeBox_ = box;
+            targetObserved = true;
         }
         if (isImshow_) {
             std::ostringstream label;
@@ -490,6 +491,14 @@ bool F_BuffTracker::update(cv::Mat& frame, bool isOpenMaybeTarget) {
                         cv::Scalar(0, 0, 255), 2);
         }
     }
+
+    if (!targetObserved) {
+        lastFailureReason_ = "Selected blade was not observed in the current frame";
+        return false;
+    }
+    const double measuredRadius = rBox_.centerDistance(fanBladeBox_);
+    if (!std::isfinite(measuredRadius) || measuredRadius < 1.0) return false;
+    radius_ = 0.2 * measuredRadius + 0.8 * radius_;
 
     for (int index = 0; index < 5; ++index) {
         if (std::find(lightedFanBladeIdList.begin(), lightedFanBladeIdList.end(), index) != lightedFanBladeIdList.end()) {

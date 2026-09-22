@@ -55,6 +55,8 @@ RayProjection ProjectPixelToRay(const CameraModel& camera,
                                 double targetDistance);
 
 RayProjection ProjectCameraPointToAngles(const cv::Point3d& point);
+// Target frame convention: x forward, y left, z up. Yaw is positive left.
+RayProjection ProjectForwardLeftUpPointToAngles(const cv::Point3d& point);
 
 std::optional<PnpResult> SolveBuffPnp(const CameraModel& camera,
                                       const Keypoints& keypoints,

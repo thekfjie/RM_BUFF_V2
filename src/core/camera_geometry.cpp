@@ -78,6 +78,8 @@ bool IsCameraModelUsable(const CameraModel& camera) {
            camera.cameraMatrix.rows == 3 &&
            camera.cameraMatrix.cols == 3 &&
            camera.cameraMatrix.type() == CV_64F &&
+           cv::checkRange(camera.cameraMatrix) &&
+           (camera.distCoeffs.empty() || cv::checkRange(camera.distCoeffs)) &&
            std::isfinite(camera.cameraMatrix.at<double>(0, 0)) &&
            std::isfinite(camera.cameraMatrix.at<double>(1, 1)) &&
            camera.cameraMatrix.at<double>(0, 0) > 0.0 &&
@@ -100,11 +102,24 @@ RayProjection ProjectCameraPointToAngles(const cv::Point3d& point) {
     return projection;
 }
 
+RayProjection ProjectForwardLeftUpPointToAngles(const cv::Point3d& point) {
+    RayProjection projection;
+    const double range = cv::norm(point);
+    if (!std::isfinite(range) || range <= 1e-6) return projection;
+    projection.valid = true;
+    projection.point = point;
+    projection.ray = point * (1.0 / range);
+    projection.yaw = std::atan2(point.y, point.x);
+    projection.pitch = std::atan2(point.z, std::hypot(point.x, point.y));
+    return projection;
+}
+
 RayProjection ProjectPixelToRay(const CameraModel& camera,
                                 const cv::Point2d& pixel,
                                 double targetDistance) {
     RayProjection projection;
-    if (!IsCameraModelUsable(camera) || !std::isfinite(pixel.x) || !std::isfinite(pixel.y)) {
+    if (!IsCameraModelUsable(camera) || !std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+        !std::isfinite(targetDistance) || targetDistance <= 0.0) {
         return projection;
     }
 
@@ -130,8 +145,11 @@ std::optional<PnpResult> BuffPnpSolver::solve(
     const CameraModel& camera,
     const Keypoints& keypoints,
     const std::vector<cv::Point3f>& objectPoints) {
-    if (!IsCameraModelUsable(camera) || !keypoints.valid || objectPoints.size() < kBladeKeypointIndices.size()) {
+    if (!IsCameraModelUsable(camera) || !keypoints.valid || objectPoints.size() != kBladeKeypointIndices.size()) {
         return std::nullopt;
+    }
+    for (const auto& point : objectPoints) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) return std::nullopt;
     }
 
     std::vector<cv::Point2f> imagePoints;

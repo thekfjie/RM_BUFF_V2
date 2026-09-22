@@ -1,4 +1,5 @@
 #include "standalone_visual_tools.hpp"
+#include "core/target_class.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -331,7 +332,7 @@ cv::Rect BBoxToRect(const BBox& bbox) {
 }
 
 int PreferredYoloSeedClassId(const std::string& color) {
-    return (color == "red") ? 1 : 2;
+    return TargetClassForColor(color);
 }
 
 } // namespace gutcpp::standalone

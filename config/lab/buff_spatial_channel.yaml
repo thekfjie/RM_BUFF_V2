@@ -24,6 +24,9 @@ buff_detector_node:
     big_fit_max_abs_speed: 2.090
     big_fit_max_observation_gap: 0.50
     big_fit_max_phase_jump: 0.80
+    big_fit_min_sample_span: 1.5
+    big_fit_max_model_age: 0.25
+    big_fit_max_consecutive_rejected: 8
 
     detector_type: yolo
     onnx_model_path: models/best.onnx
@@ -31,7 +34,9 @@ buff_detector_node:
     yolo_nms_threshold: 0.45
     yolo_input_width: 640
     yolo_input_height: 640
-    yolo_refresh_interval: 30
+    # Every frame revalidates target activation and supplies current pose points.
+    # Increase only for a measured hybrid-tracking experiment.
+    yolo_refresh_interval: 1
     yolo_show_debug: false
 
     publish_debug_image: true
@@ -46,9 +51,12 @@ buff_detector_node:
 
     # PnP stays disabled until the real BUFF blade object points are measured.
     enable_pnp: false
+    pnp_depth_max_age: 0.15
+    pnp_max_reprojection_error: 3.0
+    max_image_age: 0.25
 
-    hsv_lower: [0, 100, 100]
-    hsv_upper: [15, 255, 255]
+    hsv_lower: [90, 100, 100]
+    hsv_upper: [130, 255, 255]
     kernel: 3
     inside_rate: 0.6
     outside_rate: 1.5
@@ -60,5 +68,7 @@ buff_spatial_tracker_node:
     target_frame: odom
     enable_tf: true
     lost_time_thres: 0.3
+    observation_timeout: 0.15
+    max_observation_age: 0.25
     prediction_lead_time: 0.0
     velocity_smoothing_alpha: 0.45

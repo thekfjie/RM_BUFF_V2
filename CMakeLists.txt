@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(rm_buff_tracker LANGUAGES CXX)
+project(rm_buff_tracker LANGUAGES C CXX)
 
 # OpenCV_DIR resolution priority:
 # 1) -DOpenCV_DIR=... (manual)
@@ -57,6 +57,9 @@ endif()
 
 set(HAVE_ONNXRUNTIME OFF)
 if(DEFINED ONNXRUNTIME_DIR AND EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_cxx_api.h")
+    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
+        PATHS "${ONNXRUNTIME_DIR}/lib" "${ONNXRUNTIME_DIR}/lib64"
+        NO_DEFAULT_PATH REQUIRED)
     set(HAVE_ONNXRUNTIME ON)
     message(STATUS "ONNX Runtime found at ${ONNXRUNTIME_DIR}")
 else()
@@ -79,7 +82,7 @@ target_link_libraries(buff_core PUBLIC ${OpenCV_LIBS})
 
 if(HAVE_ONNXRUNTIME)
     target_include_directories(buff_core PUBLIC "${ONNXRUNTIME_DIR}/include")
-    target_link_libraries(buff_core PUBLIC "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+    target_link_libraries(buff_core PUBLIC "${ONNXRUNTIME_LIBRARY}")
     target_compile_definitions(buff_core PUBLIC HAVE_ONNXRUNTIME=1)
 endif()
 
@@ -111,10 +114,14 @@ add_executable(angle_predictor_test
 )
 target_link_libraries(angle_predictor_test PRIVATE buff_core)
 
+add_executable(tracker_regression_test tests/tracker_regression_test.cpp)
+target_link_libraries(tracker_regression_test PRIVATE buff_core)
+
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME camera_geometry_test COMMAND camera_geometry_test)
     add_test(NAME angle_predictor_test COMMAND angle_predictor_test)
+    add_test(NAME tracker_regression_test COMMAND tracker_regression_test)
 endif()
 
 if(WIN32 AND HAVE_ONNXRUNTIME)
@@ -122,7 +129,7 @@ if(WIN32 AND HAVE_ONNXRUNTIME)
     set(ONNXRUNTIME_PROVIDERS_SHARED_DLL "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_shared.dll")
 
     if(EXISTS "${ONNXRUNTIME_DLL}")
-        foreach(runtime_target predict_example_main yolo_video_test yolo_image_test camera_geometry_test angle_predictor_test)
+        foreach(runtime_target predict_example_main yolo_video_test yolo_image_test camera_geometry_test angle_predictor_test tracker_regression_test)
             add_custom_command(TARGET ${runtime_target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "${ONNXRUNTIME_DLL}"

@@ -29,6 +29,8 @@ struct PipelineOutput {
     double deltaAngle = 0.0;
     double compensatedDelta = 0.0;
     double angularVelocity = 0.0;
+    double predictionHorizon = 0.0; // seconds from the observation timestamp
+    double phaseCorrection = 0.0;
     cv::Point2d predictedPoint{0.0, 0.0};
     cv::Point2d compensatedPoint{0.0, 0.0};
     std::string debugState;

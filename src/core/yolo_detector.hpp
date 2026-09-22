@@ -24,7 +24,7 @@ struct YoloDetectorConfig {
     int inputHeight = 640;
     // Class IDs: 0=RR(red target), 1=RW(red hit), 2=BR(blue target), 3=BW(blue hit)
     int refreshInterval = 30;
-    // When set, only this class or its same-color state counterpart may seed the tracker.
+    // Only unhit targets may seed. No fallback to a same-color hit blade.
     std::optional<int> preferredClassId;
 };
 

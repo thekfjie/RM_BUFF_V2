@@ -11,7 +11,7 @@ namespace gutcpp {
 
 struct PipelineConfig {
     MoveMode moveMode = MoveMode::Small;
-    ClockMode clockMode = ClockMode::Anticlockwise;
+    ClockMode clockMode = ClockMode::Automatic;
     double deltaT = 0.2;
     int freq = 50;
     BigPredictorConfig bigPredictorConfig;
@@ -28,6 +28,8 @@ public:
                    const Parameter& param,
                    std::optional<cv::Rect> rBoxHint = std::nullopt,
                    std::optional<cv::Rect> fanBoxHint = std::nullopt);
+    bool reseed(const cv::Mat& frame, const Parameter& param,
+                const cv::Rect& rBox, const cv::Rect& fanBox);
 
     PipelineOutput processFrame(
         cv::Mat& frame,
@@ -38,6 +40,8 @@ public:
     const PredictorInterface& predictor() const { return *predictor_; }
 
     void updateCompensation(const CompensationConfig& config);
+    void resetMotion();
+    void setPredictionHorizon(PipelineOutput& output, double horizonSeconds) const;
 
 private:
     std::unique_ptr<DetectorInterface> detector_;
@@ -46,6 +50,9 @@ private:
     FlightTimeCompensator compensator_;
     PipelineConfig config_;
     bool initialized_ = false;
+    double lastObservationTime_ = std::numeric_limits<double>::quiet_NaN();
+    std::optional<cv::Point2f> lastCenter_;
+    double lastRadius_ = 0.0;
 };
 
 } // namespace gutcpp

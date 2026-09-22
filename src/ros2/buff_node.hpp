@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <chrono>
 #include <optional>
 
 #include <rclcpp/rclcpp.hpp>
@@ -59,6 +60,11 @@ private:
     int yoloRelockAfterMisses_ = 1;
     Parameter parameter_;
     PipelineConfig pipelineConfig_;
+    double maxImageAge_ = 0.25;
+    bool hasImage_ = false;
+    std_msgs::msg::Header lastImageHeader_;
+    std::chrono::steady_clock::time_point lastImageReceipt_;
+    rclcpp::TimerBase::SharedPtr watchdog_;
     std::optional<cv::Rect> staticRoi_;
     std::optional<cv::Rect> staticFanRoi_;
 
